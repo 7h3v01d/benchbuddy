@@ -23,6 +23,12 @@ Run the tests (the GUI tests run headless):
 QT_QPA_PLATFORM=offscreen python -m pytest tests -q
 ```
 
+### Current meter (optional hardware)
+
+Flash `firmware/benchbuddy_meter` to a Wemos D1 R32 (any ESP32), wire an INA226 or INA219 breakout in
+series with the board you want to measure, then pick its COM port in the **Measure** tab.
+Wiring, ranges and limits: [`firmware/README.md`](firmware/README.md).
+
 ### Windows build (standalone .exe)
 
 Run `setup.bat` once, then `build.bat`. It renders the icon (`tools/make_icon.py`) and runs
@@ -35,6 +41,7 @@ Python needed on the target PC; fonts and icons are bundled).
 |---|---|
 | **Power budget** | Build a power tree (USB / battery / adapter → LDO / buck / boost → loads). Shows average and peak current per rail, voltage sag from cable/battery resistance, regulator dropout failures, LDO heat, bulk-capacitor suggestions and battery runtime. Presets for ESP32 variants, Arduino, servos, NeoPixels, SIM800L, etc. A live **power-tree diagram** draws supply → regulator → load with status colours, peak-vs-rating bars and current-weighted lines; click a rail to select it, or **⤢ Expand** it into its own window. **Export report…** writes a self-contained dark HTML page (prints light) or an A4 PDF with the diagram, rails, loads and findings. Save/open as JSON. |
 | **Brown-out sim** | Time-domain simulation of a load burst (e.g. Wi-Fi TX) through source resistance, input cap, regulator and output cap. Shows the voltage dip against your brown-out threshold, can import a rail from the Power budget, and finds the smallest output capacitor that survives. |
+| **Measure** | Live current from an **INA226 / INA219** on an ESP32 (see `firmware/`). Min/max trace that keeps µs spikes visible at any zoom, drag-to-select analysis (average, 99th-pct peak, charge, energy, active/idle split, burst count and width), zero offset, over-range and resolution warnings, CSV save/open. **Use as a load** writes the measured active/peak/sleep/duty into the Power budget; **Replay in the Brown-out sim** drives the simulator with your real waveform instead of square bursts. A built-in demo device works without hardware. |
 | **Resistors** | Colour code ⇄ value (3-6 bands), SMD codes (3/4-digit, R, EIA-96), E12/E24/E96 nearest values, series/parallel, voltage divider, LED resistor. |
 | **Capacitors** | Marking decoder (104, 473K, 4n7 ...), RC time/cutoff, reactance, series/parallel, hold-up and bulk-cap sizing, ESP32 decoupling rules. |
 | **Design calcs** | Battery ADC divider, IPC-2221 trace width, buck/boost inductor sizing, I2C pull-up range, BJT base resistor, **555 timer** (design from frequency + duty with standard parts, analyse, one-shot), **op-amp gain** (E-series Rf/Rg picks plus output-swing, bandwidth and slew checks) and **LED strip power** (current, PSU size, max brightness for your supply, FastLED power-limit line). |
@@ -71,7 +78,7 @@ real control-loop stability or ringing. Use it to compare options and size capac
 
 ## Look & feel
 
-The header strip shows the power-budget verdict on every tab (click it to jump there). Ctrl+1…9 jump between tabs (also under **View**). The window size, last tab and pinout board are remembered between launches.
+The header strip shows the power-budget verdict on every tab (click it to jump there). Ctrl+1…0 jump between tabs (also under **View**). The window size, last tab and pinout board are remembered between launches.
 
 
 Dark industrial theme (obsidian / teal / phosphor, flat zero-radius controls, JetBrains Mono).
@@ -83,10 +90,11 @@ so it works without installing the font. Arrow/check icons are small SVGs in `be
 ## Layout
 
 ```
-benchbuddy/core/   units, resistors, capacitors, power, brownout, calcs, presets, pinout, report, partsdb, seed_parts, seed_extra, identify, ocr
+benchbuddy/core/   units, resistors, capacitors, power, brownout, calcs, presets, pinout, report, meter, partsdb, seed_parts, seed_extra, identify, ocr
 benchbuddy/gui/    one module per tab + main_window, theme (+ fonts/, icons/)
 tests/             core maths + headless GUI smoke tests
 tools/            make_icon.py (SVG → .ico for the Windows build)
+firmware/         ESP32 meter sketch + wiring guide; host_test/ runs the sketch on a PC for tests
 ```
 
 ## Ideas for next steps
@@ -95,5 +103,4 @@ tools/            make_icon.py (SVG → .ico for the Windows build)
 - Wi-Fi/BLE burst profiles for the simulator, multi-rail simulation
 - Community-shareable parts library
 - More calculators (active filters, Zener / shunt regulators)
-- Live current measurement (INA219/INA226 over serial) overlaid on the budget and brown-out plot
 - Ask-about-a-part via a local Ollama model

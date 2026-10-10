@@ -790,3 +790,28 @@ def test_led_budget_numbers():
     b = calcs.led_max_brightness(60, 20, 2000, idle_ma=1.0)
     assert abs(b - (2000 - 60) / (60 * 60)) < 1e-9
     assert calcs.led_max_brightness(100, 20, 50) == 0.0
+
+
+def test_brownout_replays_measured_profile():
+    from benchbuddy.core import brownout as bo
+    base = bo.SimParams()                                 # ESP32 on USB through an AMS1117
+    burst = bo.simulate(base)
+    # rebuild the default burst train as a "measured" profile: same physics, same answer
+    t, i = [], []
+    k, step = 0, 20e-6
+    while k * step <= base.duration_s:
+        t.append(k * step)
+        i.append(bo._load_current(base, k * step))
+        k += 1
+    replay = bo.simulate(bo.with_profile(base, t, i, "rebuilt"))
+    assert replay.v_out_min == pytest.approx(burst.v_out_min, abs=0.01)
+    assert replay.params.i_peak_a == base.i_peak_a
+    assert any("measured trace" in n for _, n in replay.notes)
+    # a bigger measured peak brown-outs where the square model would not
+    hot = bo.with_profile(base, [0, 1e-3, 1.4e-3, 3e-3], [0.08, 1.2, 0.08, 0.08], "spike")
+    assert bo.simulate(hot).v_out_min < burst.v_out_min
+    assert bo.without_profile(hot).profile_t is None
+    with pytest.raises(ValueError):
+        bo.simulate(bo.replace(base, profile_t=(0.0, 1.0), profile_i=(0.1,)))
+    with pytest.raises(ValueError):
+        bo.with_profile(base, [0.0], [0.1])

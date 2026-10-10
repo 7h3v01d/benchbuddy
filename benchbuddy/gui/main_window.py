@@ -11,6 +11,7 @@ from .. import __version__
 from ..core.partsdb import PartsDB
 from .calcs_tab import CalcsTab
 from .capacitor_tab import CapacitorTab
+from .measure_tab import MeasureTab
 from .parts_tab import PartsTab
 from .pinout_tab import PinoutTab
 from .power_tab import PowerTab
@@ -66,6 +67,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.power_tab, "POWER BUDGET")
         self.sim_tab = SimTab(self.power_tab)
         self.tabs.addTab(self.sim_tab, "BROWN-OUT SIM")
+        self.measure_tab = MeasureTab(self.power_tab, self.sim_tab)
+        self.tabs.addTab(self.measure_tab, "MEASURE")
         self.tabs.addTab(ResistorTab(), "RESISTORS")
         self.tabs.addTab(CapacitorTab(), "CAPACITORS")
         self.tabs.addTab(CalcsTab(), "DESIGN CALCS")
@@ -94,8 +97,8 @@ class MainWindow(QMainWindow):
             words = self.tabs.tabText(i).replace("&&", "&").split()
             name = " ".join(w if w in ("GPIO",) else w.capitalize() for w in words)
             act = QAction(name.replace("&", "&&"), self)
-            if i < 9:
-                act.setShortcut(QKeySequence(f"Ctrl+{i + 1}"))
+            if i < 10:
+                act.setShortcut(QKeySequence(f"Ctrl+{(i + 1) % 10}"))      # Ctrl+1 … Ctrl+9, Ctrl+0
             act.triggered.connect(lambda _=False, idx=i: self.tabs.setCurrentIndex(idx))
             view.addAction(act)
         help_menu = self.menuBar().addMenu("&Help")
@@ -103,7 +106,7 @@ class MainWindow(QMainWindow):
         about.triggered.connect(self.about)
         help_menu.addAction(about)
         self.statusBar().showMessage(
-            "Tip: Ctrl+1…9 jumps between tabs. Type what's printed on a part into Parts lookup to identify it.", 8000)
+            "Tip: Ctrl+1…0 jumps between tabs. Type what's printed on a part into Parts lookup to identify it.", 8000)
         self._restore_state()
 
     # ------------------------------------------------------------ settings
@@ -136,5 +139,6 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._save_state()
+        self.measure_tab.shutdown()
         self.db.close()
         super().closeEvent(event)

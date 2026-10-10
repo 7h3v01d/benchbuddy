@@ -28,7 +28,7 @@ def win(app, tmp_path):
 
 
 def test_all_tabs_build(win):
-    assert win.tabs.count() == 9
+    assert win.tabs.count() == 10
     for i in range(win.tabs.count()):
         win.tabs.setCurrentIndex(i)
         win.tabs.currentWidget().grab()
@@ -252,3 +252,82 @@ def test_new_calculator_pages(win):
     for i in range(c.sub_tabs.count()):
         c.sub_tabs.setCurrentIndex(i)
         c.sub_tabs.currentWidget().grab()
+
+
+def _pump(app, seconds):
+    import time
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        app.processEvents()
+        time.sleep(0.01)
+
+
+def test_measure_tab_demo_device_end_to_end(win, app):
+    from benchbuddy.gui.measure_tab import DEMO_PORT
+    m = win.measure_tab
+    m.connect_meter(DEMO_PORT)
+    _pump(app, 0.4)
+    assert m.hello.get("chip") == "INA226" and m.rec_btn.isEnabled()
+    assert "INA226" in m.status.text() and "819" in m.status.text()        # ±819 mA range with 0.1 Ω
+    m.set_recording(True)
+    _pump(app, 1.2)
+    m.set_recording(False)
+    _pump(app, 0.2)
+    assert len(m.cap) > 800
+    m.span_combo.setCurrentText("All")
+    s = m.current_stats()
+    assert s is not None and 0.03 < s.avg_a < 0.1 and s.max_a > 0.3 and s.bursts >= 5
+    win.tabs.setCurrentWidget(m)
+    m.plot.grab()
+    # selection drives stats
+    m.plot.selection = (m.cap.t[0], m.cap.t[0] + 0.05)
+    m.update_stats()
+    assert "selection" in m.stats_view.toPlainText()
+    m.plot.selection = None
+    # hand-off to the brown-out sim
+    m.send_to_sim()
+    assert win.sim_tab._profile is not None and win.tabs.currentWidget() is win.sim_tab
+    assert "measured trace" in win.sim_tab.verdict.toPlainText()
+    assert not win.sim_tab.f_peak.isEnabled()
+    win.sim_tab.clear_profile()
+    assert win.sim_tab.f_peak.isEnabled()
+    # FAST mode switch is reflected from the device's HELLO
+    m.mode_combo.setCurrentText("FAST")
+    _pump(app, 0.3)
+    assert m.hello.get("mode") == "FAST"
+    m.disconnect_meter()
+    _pump(app, 0.3)
+    assert not m.connected and m.connect_btn.text() == "Connect"
+
+
+def test_measure_apply_to_load_and_csv(win, app, tmp_path, monkeypatch):
+    from benchbuddy.core import meter as mt
+    m = win.measure_tab
+    cap = mt.Capture()
+    rate = 5000
+    t = [k / rate for k in range(rate)]
+    cap.add_values(t, [0.3 if (x % 0.1) < 0.01 else 0.05 for x in t], [3.3] * rate)
+    path = tmp_path / "c.csv"
+    path.write_text(cap.to_csv(), encoding="utf-8")
+    m.load_csv(str(path))
+    assert len(m.cap) == rate and m.span_combo.currentText() == "All"
+    from PyQt6.QtWidgets import QInputDialog
+    answers = iter([("➕ New load from this measurement", True), ("3V3", True)])
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *a, **k: next(answers))
+    n_before = len(win.power_tab.project.loads)
+    m.apply_to_load()
+    new = win.power_tab.project.loads[-1]
+    assert len(win.power_tab.project.loads) == n_before + 1 and new.rail == "3V3"
+    assert abs(new.i_active_ma - 300) < 10 and abs(new.duty - 0.1) < 0.01 and abs(new.i_sleep_ma - 50) < 2
+    # overwrite an existing load
+    answers2 = iter([("1. ESP32 DevKit (WROOM-32) (on 3V3)", True)])
+    monkeypatch.setattr(QInputDialog, "getItem", lambda *a, **k: next(answers2))
+    m.apply_to_load()
+    assert abs(win.power_tab.project.loads[0].i_peak_ma - 300) < 5
+    # bad file is reported, not raised
+    bad = tmp_path / "bad.csv"
+    bad.write_text("nope\n", encoding="utf-8")
+    from PyQt6.QtWidgets import QMessageBox
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
+    m.load_csv(str(bad))
+    assert len(m.cap) == rate

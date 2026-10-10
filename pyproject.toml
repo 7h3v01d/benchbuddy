@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{ name = "Leon Priest" }]
-dependencies = ["PyQt6>=6.5"]
+dependencies = ["PyQt6>=6.5", "pyserial>=3.5"]
 
 [project.optional-dependencies]
 ocr = ["pytesseract", "pillow"]

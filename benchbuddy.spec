@@ -14,7 +14,7 @@ a = Analysis(
     [str(ROOT / "benchbuddy" / "__main__.py")],
     pathex=[str(ROOT)],
     datas=datas,
-    hiddenimports=["PyQt6.QtSvg"],          # SVG icons/arrows load through the Qt image plugin
+    hiddenimports=["PyQt6.QtSvg", "serial.tools.list_ports"],   # SVG icons; serial port scan
     excludes=["tkinter", "pytest", "PyQt6.QtWebEngineCore", "PyQt6.QtWebEngineWidgets",
               "PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtMultimedia", "PyQt6.Qt3DCore"],
     noarchive=False,

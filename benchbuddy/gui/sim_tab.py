@@ -33,6 +33,7 @@ class SimTab(QWidget):
         self.power_tab = power_tab
         self.params = bo.SimParams()
         self.result: bo.SimResult | None = None
+        self._profile: tuple[list[float], list[float], str] | None = None   # measured load (t, i, label)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(150)
@@ -102,6 +103,13 @@ class SimTab(QWidget):
         ll.addWidget(group("Source", src))
         ll.addWidget(group("Regulator", reg))
         ll.addWidget(group("Output capacitor", out))
+        self.profile_label = QLabel()
+        self.profile_label.setWordWrap(True)
+        self.profile_clear = QPushButton("Use the burst model instead")
+        self.profile_clear.clicked.connect(self.clear_profile)
+        load.addRow(self.profile_label)
+        load.addRow(self.profile_clear)
+        self._load_form = load
         ll.addWidget(group("Load", load))
         ll.addStretch(1)
         scroll = QScrollArea()
@@ -135,6 +143,38 @@ class SimTab(QWidget):
         lay.addWidget(split)
 
         self.load_preset(self.preset.currentText())
+        self._show_profile_state()
+
+    # --------------------------------------------------------- measured load
+    def set_profile(self, t: list[float], i: list[float], label: str = "measured") -> None:
+        """Drive the load from a measured trace (from the Measure tab)."""
+        bo.with_profile(bo.SimParams(), t, i, label)      # validates shape early
+        self._profile = (list(t), list(i), label)
+        self._show_profile_state()
+        self.run()
+
+    def clear_profile(self) -> None:
+        self._profile = None
+        self._show_profile_state()
+        self.run()
+
+    def _show_profile_state(self) -> None:
+        on = self._profile is not None
+        for w in (self.f_base, self.f_peak, self.f_burst, self.f_period, self.f_first, self.f_n):
+            w.setEnabled(not on)
+        self._load_form.setRowVisible(self.profile_label, on)
+        self._load_form.setRowVisible(self.profile_clear, on)
+        if on:
+            t, i, label = self._profile
+            self.profile_label.setText(
+                f"<span style='color:{self._teal()}'>■</span> <b>Measured load:</b> {label}<br>"
+                f"{len(t)} points over {t[-1] - t[0]:.3g} s, {min(i) * 1000:.0f}–{max(i) * 1000:.0f} mA. "
+                "The burst fields above are ignored.")
+
+    @staticmethod
+    def _teal() -> str:
+        from .theme import TEAL
+        return TEAL
 
     # ----------------------------------------------------------------- params
     def showEvent(self, e) -> None:  # noqa: N802
@@ -206,7 +246,11 @@ class SimTab(QWidget):
         n = self.f_n.value()
         if n is None:
             return None
-        return bo.SimParams(reg_kind=self.kind.currentText(), n_bursts=int(n), **vals)
+        p = bo.SimParams(reg_kind=self.kind.currentText(), n_bursts=int(n), **vals)
+        if self._profile is not None:
+            t, i, label = self._profile
+            p = bo.with_profile(p, t, i, label)
+        return p
 
     # ---------------------------------------------------------------- actions
     def load_preset(self, name: str) -> None:

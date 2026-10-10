@@ -1,2 +1,3 @@
 PyQt6>=6.5
+pyserial>=3.5  # Measure tab (real meters; the demo device works without it)
 pytest>=7  # tests only

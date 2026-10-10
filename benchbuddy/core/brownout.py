@@ -22,6 +22,7 @@ measuring with a scope.
 
 from __future__ import annotations
 
+import bisect
 import math
 from dataclasses import dataclass, field, replace
 
@@ -54,10 +55,34 @@ class SimParams:
     t_first_s: float = 1e-3
     n_bursts: int = 3
     v_threshold: float = 3.0      # below this the chip browns out / resets
+    # measured load: when set, replaces the base/burst model (t from 0, amps)
+    profile_t: tuple[float, ...] | None = None
+    profile_i: tuple[float, ...] | None = None
+    profile_label: str = ""
+
+    @property
+    def has_profile(self) -> bool:
+        return bool(self.profile_t)
 
     @property
     def duration_s(self) -> float:
+        if self.has_profile:
+            return self.profile_t[-1]
         return self.t_first_s + self.n_bursts * self.period_s
+
+
+def with_profile(p: SimParams, t: list[float], i: list[float], label: str = "measured") -> SimParams:
+    """Drive the simulation with a measured current waveform instead of square bursts."""
+    if len(t) != len(i) or len(t) < 2:
+        raise ValueError("a profile needs at least 2 (time, current) points of equal length")
+    t0 = t[0]
+    tt = tuple(x - t0 for x in t)
+    return replace(p, profile_t=tt, profile_i=tuple(max(x, 0.0) for x in i), profile_label=label,
+                   i_base_a=max(min(i), 0.0), i_peak_a=max(max(i), 0.0))
+
+
+def without_profile(p: SimParams) -> SimParams:
+    return replace(p, profile_t=None, profile_i=None, profile_label="")
 
 
 @dataclass
@@ -84,6 +109,9 @@ class SimResult:
 
 
 def _load_current(p: SimParams, t: float) -> float:
+    if p.profile_t:
+        k = bisect.bisect_right(p.profile_t, t) - 1      # sample-and-hold between measured points
+        return p.profile_i[min(max(k, 0), len(p.profile_i) - 1)]
     if t >= p.t_first_s:
         phase = (t - p.t_first_s) % p.period_s
         if phase < p.burst_s:
@@ -100,13 +128,19 @@ def validate(p: SimParams) -> None:
         raise ValueError("output capacitance must be above 0")
     if p.esr_out < 0 or p.esr_in < 0 or p.c_in_f < 0:
         raise ValueError("ESR and input capacitance can't be negative")
-    if p.burst_s <= 0 or p.period_s <= p.burst_s:
-        raise ValueError("burst length must be positive and shorter than the period")
-    if p.i_peak_a < p.i_base_a:
-        raise ValueError("peak current must be at least the base current")
+    if p.profile_t is not None or p.profile_i is not None:
+        if not p.profile_t or not p.profile_i or len(p.profile_t) != len(p.profile_i) or len(p.profile_t) < 2:
+            raise ValueError("measured profile is empty or malformed")
+        if any(b < a for a, b in zip(p.profile_t, p.profile_t[1:])) or p.profile_t[-1] <= 0:
+            raise ValueError("measured profile times must increase")
+    else:
+        if p.burst_s <= 0 or p.period_s <= p.burst_s:
+            raise ValueError("burst length must be positive and shorter than the period")
+        if p.i_peak_a < p.i_base_a:
+            raise ValueError("peak current must be at least the base current")
     if p.v_src <= 0 or p.v_set <= 0:
         raise ValueError("voltages must be positive")
-    if p.n_bursts < 1:
+    if p.n_bursts < 1 and not p.has_profile:
         raise ValueError("simulate at least one burst")
 
 
@@ -119,13 +153,13 @@ def simulate(p: SimParams, max_points: int = 2000, max_steps: int = 400_000) -> 
         tau_out = (r_out_eff + p.esr_out) * p.c_out_f
         tau_in = (p.r_src + p.esr_in) * p.c_in_f if p.c_in_f > 0 else float("inf")
         loop_gain = 1 + p.r_src / r_out_eff        # source resistance feeds back through the regulator
-        dt = 0.1 * min(tau_out, tau_in, p.burst_s / 5, tau_reg / loop_gain)
+        dt = 0.1 * min(tau_out, tau_in, _event_scale(p), tau_reg / loop_gain)
     else:
         e_out = max(p.esr_out, ESR_FLOOR)
         e_in = max(p.esr_in, ESR_FLOOR)
         tau_out = e_out * p.c_out_f
         tau_in = e_in * p.c_in_f if p.c_in_f > 0 else float("inf")
-        dt = 0.1 * min(tau_out, tau_in, p.burst_s / 5)
+        dt = 0.1 * min(tau_out, tau_in, _event_scale(p))
     dt = min(max(dt, 20e-9), 2e-6)
     dur = p.duration_s
     steps = int(dur / dt)
@@ -135,18 +169,19 @@ def simulate(p: SimParams, max_points: int = 2000, max_steps: int = 400_000) -> 
     stride = max(steps // max_points, 1)
 
     has_cin = p.c_in_f > 0
-    # start at steady state for the base load
-    i_in = p.i_base_a + p.iq_a
+    # start at steady state for the load at t = 0
+    i0 = _load_current(p, 0.0) if p.has_profile else p.i_base_a
+    i_in = i0 + p.iq_a
     if p.reg_kind == "switcher":
-        i_in = p.v_set * p.i_base_a / (p.efficiency * max(p.v_src, 0.5)) + p.iq_a
+        i_in = p.v_set * i0 / (p.efficiency * max(p.v_src, 0.5)) + p.iq_a
     v_cin = p.v_src - p.r_src * i_in
-    i_reg = p.i_base_a
+    i_reg = i0
     if p.reg_kind == "ldo":
-        ratio0 = min(p.i_base_a / p.i_rated_a, 1.5) if p.i_rated_a > 0 else 1.0
+        ratio0 = min(i0 / p.i_rated_a, 1.5) if p.i_rated_a > 0 else 1.0
         v_t0 = max(min(p.v_set, v_cin - p.dropout_v * (0.75 + 0.25 * ratio0)), 0.0)
-        v_cout = v_t0 - p.r_out * p.i_base_a
+        v_cout = v_t0 - p.r_out * i0
     elif p.reg_kind == "switcher":
-        v_cout = p.v_set - p.r_out * p.i_base_a
+        v_cout = p.v_set - p.r_out * i0
     else:
         v_cout = v_cin
 
@@ -223,6 +258,14 @@ def simulate(p: SimParams, max_points: int = 2000, max_steps: int = 400_000) -> 
     return res
 
 
+def _event_scale(p: SimParams) -> float:
+    """Shortest load feature the time step must resolve."""
+    if p.has_profile:
+        gaps = [b - a for a, b in zip(p.profile_t, p.profile_t[1:]) if b > a]
+        return max(min(gaps) if gaps else p.profile_t[-1], 1e-6)
+    return p.burst_s / 5
+
+
 def _annotate(res: SimResult) -> None:
     p = res.params
     step = p.i_peak_a - p.i_base_a
@@ -245,6 +288,10 @@ def _annotate(res: SimResult) -> None:
     else:
         res.notes.append(("ok", f"No brown-out: the lowest point is {res.v_out_min - p.v_threshold:.2f} V above "
                                 f"the {p.v_threshold:g} V threshold."))
+    if p.has_profile:
+        res.notes.append(("ok", f"Load is a measured trace ({p.profile_label or 'capture'}: "
+                                f"{len(p.profile_t)} points over {p.profile_t[-1] * 1000:.1f} ms, "
+                                f"{p.i_base_a * 1000:.0f}–{p.i_peak_a * 1000:.0f} mA)."))
     if step > 0:
         res.notes.append(("ok", f"Where the dip comes from: output-cap ESR drops {esr_drop * 1000:.0f} mV instantly on the "
                                 f"load step; source/cable resistance drops {src_drop * 1000:.0f} mV on the input at peak "
