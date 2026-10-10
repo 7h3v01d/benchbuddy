@@ -1,11 +1,11 @@
-// Fake I2C bus with one INA226 / INA219 (or a PCA9685 decoy) for host tests.
+// Fake I2C bus with one INA226 / INA219 / INA260 decoy / reconfigured INA219 / PCA9685 decoy.
 #pragma once
 #include "Arduino.h"
 #include <cmath>
 #include <vector>
 
 extern uint64_t g_now_us;
-extern int g_chip;            // 226, 219, 0 = none, 9685 = PCA9685 decoy at 0x40
+extern int g_chip;            // 226, 219, 0 = none, 9685 = PCA9685, 260 = INA260, 2191 = INA219 (custom cfg)
 
 struct FakeINA {
   uint16_t regs[256] = {0};
@@ -16,6 +16,8 @@ struct FakeINA {
     if (k == 226) { regs[0] = 0x4127; regs[0xFE] = 0x5449; regs[0xFF] = 0x2260; }
     if (k == 219) { regs[0] = 0x399F; }
     if (k == 9685) { regs[0] = 0x11; }
+    if (k == 260) { regs[0] = 0x6127; regs[0xFE] = 0x5449; regs[0xFF] = 0x2270; }   // INA260: TI, not INA226
+    if (k == 2191) { kind = 219; regs[0] = 0x019F; }                                   // INA219, custom config
   }
   // 50 mA idle with a 400 mA burst for 1 ms every 10 ms
   double current() const { double t = g_now_us * 1e-6; return fmod(t, 0.010) < 0.001 ? 0.400 : 0.050; }

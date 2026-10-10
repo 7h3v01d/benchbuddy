@@ -12,19 +12,52 @@ parts library tells you what it might be.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
+import sys
 from collections import Counter
 from pathlib import Path
 
-INSTALL_HINT = (
+from .images import check_image
+
+_SOURCE_HINT = (
     "To read markings from photos, install the optional extras:\n"
     "  pip install pytesseract pillow\n"
     "and Tesseract itself:\n"
-    "  Windows: installer from github.com/UB-Mannheim/tesseract/wiki (tick 'add to PATH')\n"
+    "  Windows: installer from github.com/UB-Mannheim/tesseract/wiki\n"
     "  macOS:   brew install tesseract\n"
     "  Linux:   sudo apt install tesseract-ocr"
 )
+_FROZEN_HINT = (
+    "Photo reading is built into this app; it only needs the free Tesseract program:\n"
+    "  install it from github.com/UB-Mannheim/tesseract/wiki (default folder is fine),\n"
+    "  or point the BENCHBUDDY_TESSERACT environment variable at tesseract.exe."
+)
+INSTALL_HINT = _FROZEN_HINT if getattr(sys, "frozen", False) else _SOURCE_HINT
+
+_WINDOWS_DEFAULTS = (                    # (environment variable, path below it)
+    ("ProgramFiles", ("Tesseract-OCR", "tesseract.exe")),
+    ("ProgramFiles(x86)", ("Tesseract-OCR", "tesseract.exe")),
+    ("LOCALAPPDATA", ("Programs", "Tesseract-OCR", "tesseract.exe")),
+)
+
+
+def find_tesseract() -> str | None:
+    """BENCHBUDDY_TESSERACT, then PATH, then the Windows installer's default folders."""
+    override = os.environ.get("BENCHBUDDY_TESSERACT", "").strip()
+    if override and Path(override).is_file():
+        return override
+    found = shutil.which("tesseract")
+    if found:
+        return found
+    if sys.platform == "win32":
+        for var, parts in _WINDOWS_DEFAULTS:
+            base = os.environ.get(var)
+            if base and Path(base, *parts).is_file():
+                return str(Path(base, *parts))
+    return None
+
 
 WHITELIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-+./"
 _ALLOWED = re.compile(r"[^A-Z0-9\-+./]")
@@ -37,11 +70,13 @@ def ocr_available() -> tuple[bool, str]:
     except ImportError:
         return False, "The 'pillow' package is not installed."
     try:
-        import pytesseract  # noqa: F401
+        import pytesseract
     except ImportError:
         return False, "The 'pytesseract' package is not installed."
-    if not shutil.which("tesseract"):
-        return False, "The Tesseract program was not found on your PATH."
+    exe = find_tesseract()
+    if not exe:
+        return False, "The Tesseract program wasn't found (not on PATH or in its default install folder)."
+    pytesseract.pytesseract.tesseract_cmd = exe
     return True, ""
 
 
@@ -91,8 +126,7 @@ def read_markings(image_path: str | Path, max_candidates: int = 12) -> list[str]
     from PIL import Image
 
     path = Path(image_path)
-    if not path.is_file():
-        raise ValueError(f"image not found: {path}")
+    check_image(path)                   # real image, size and pixel limits before decoding
     img = Image.open(path)
     img.load()
 

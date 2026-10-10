@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QLabel, QSpinBox
 
 from ..core import calcs
 from ..core.units import format_value
-from .widgets import STATUS_COLORS, ResultView, ValueEdit, form, status_html
+from .widgets import ResultView, guarded, ValueEdit, form, status_html
 
 
 class CalcsTab(QWidget):
@@ -57,6 +57,7 @@ class CalcsTab(QWidget):
         self._recalc_adc()
         return page
 
+    @guarded("adc_out")
     def _recalc_adc(self) -> None:
         vb, vm = self.adc_vbat.value(), self.adc_vmax.value()
         if not vb or not vm:
@@ -101,6 +102,7 @@ class CalcsTab(QWidget):
         self._recalc_trace()
         return page
 
+    @guarded("tr_out")
     def _recalc_trace(self) -> None:
         i, dt = self.tr_i.value(), self.tr_dt.value()
         if not i or not dt:
@@ -143,6 +145,7 @@ class CalcsTab(QWidget):
         self._recalc_ind()
         return page
 
+    @guarded("ind_out")
     def _recalc_ind(self) -> None:
         vin, vout, i, f = (e.value() for e in (self.ind_vin, self.ind_vout, self.ind_i, self.ind_f))
         if None in (vin, vout, i, f):
@@ -182,6 +185,7 @@ class CalcsTab(QWidget):
         self._recalc_i2c()
         return page
 
+    @guarded("i2_out")
     def _recalc_i2c(self) -> None:
         vcc, cb = self.i2_vcc.value(), self.i2_cb.value()
         if not vcc or not cb:
@@ -215,6 +219,7 @@ class CalcsTab(QWidget):
         self._recalc_base()
         return page
 
+    @guarded("bs_out")
     def _recalc_base(self) -> None:
         ic, v, beta, lim = (e.value() for e in (self.bs_ic, self.bs_v, self.bs_beta, self.bs_lim))
         if None in (ic, v):
@@ -267,6 +272,7 @@ class CalcsTab(QWidget):
         for w, vis in widgets_visible.items():
             f.setRowVisible(w, vis)
 
+    @guarded("t5_out")
     def _recalc_555(self) -> None:
         mode = self.t5_mode.currentIndex()
         self._set_rows_visible(self.t5_form, {self.t5_f: mode == 0, self.t5_duty: mode == 0,
@@ -355,6 +361,7 @@ class CalcsTab(QWidget):
         self._recalc_opamp()
         return page
 
+    @guarded("oa_out")
     def _recalc_opamp(self) -> None:
         inverting = self.oa_inv.currentIndex() == 1
         g = self.oa_gain.value()
@@ -418,6 +425,7 @@ class CalcsTab(QWidget):
         self._recalc_led()
         return page
 
+    @guarded("led_out")
     def _recalc_led(self) -> None:
         spec = calcs.LED_TYPES[self.led_type.currentText()]
         ch = spec.get("channels", 3)

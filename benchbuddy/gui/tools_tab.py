@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import QComboBox, QGridLayout, QLabel, QVBoxLayout, QWidget
 
 from ..core import power
 from ..core.units import format_value
-from .widgets import ResultView, ValueEdit, form, group, status_html
+from .widgets import guarded, ResultView, ValueEdit, form, group, status_html
 
 
 class ToolsTab(QWidget):
@@ -34,6 +34,7 @@ class ToolsTab(QWidget):
         self._recalc_ohm()
         return group("Ohm's law && power", lay)
 
+    @guarded("o_out")
     def _recalc_ohm(self) -> None:
         texts = {"v": self.o_v, "i": self.o_i, "r": self.o_r, "p": self.o_p}
         given = {k: e.value() for k, e in texts.items() if e.text().strip()}
@@ -73,6 +74,7 @@ class ToolsTab(QWidget):
         self._recalc_wire()
         return group("Wire / jumper voltage drop (power out + ground back)", lay)
 
+    @guarded("w_out")
     def _recalc_wire(self) -> None:
         length, amps, v = self.w_len.value(), self.w_i.value(), self.w_v.value()
         if not length or not amps:
@@ -114,6 +116,7 @@ class ToolsTab(QWidget):
         self._recalc_gpio()
         return group("GPIO current check", lay)
 
+    @guarded("g_out")
     def _recalc_gpio(self) -> None:
         from ..core.units import parse_value
         raw = self.g_in.text().replace(",", " ").split()
@@ -153,6 +156,7 @@ class BatteryTab(QWidget):
                              "(USB-UART chip, power LED, sensors). Dev boards often draw 5-30 mA even when the chip sleeps."))
         self._recalc()
 
+    @guarded("b_out")
     def _recalc(self) -> None:
         vals = [e.value() for e in (self.b_active, self.b_active_s, self.b_sleep, self.b_sleep_s)]
         if None in vals:

@@ -68,3 +68,24 @@ def test_firmware_without_sensor_explains_and_never_writes_strangers(host_meter,
     assert any(b"Check wiring" in f.payload for f in frames if f.ftype == m.T_LOG)
     assert not any(f.ftype == m.T_SAMPLES for f in frames)
     assert "decoy_writes=0" in err          # a PCA9685 at 0x40 is left alone
+
+
+def test_ina260_is_not_mistaken_for_an_ina226(host_meter):
+    frames, err = _run(host_meter, 260)
+    hello = m.parse_hello(next(f for f in frames if f.ftype == m.T_HELLO).payload)
+    assert hello["chip"] == "NONE"
+    assert any(b"not an INA226" in f.payload and b"0x2270" in f.payload for f in frames if f.ftype == m.T_LOG)
+    assert not any(f.ftype == m.T_SAMPLES for f in frames)
+
+
+def test_reconfigured_ina219_needs_and_accepts_force(host_meter):
+    frames, _ = _run(host_meter, 2191)
+    hellos = [m.parse_hello(f.payload) for f in frames if f.ftype == m.T_HELLO]
+    assert hellos[0]["chip"] == "NONE"                       # not guessed at boot
+    assert hellos[1]["chip"] == "INA219"                     # explicit FORCE INA219
+    assert any(b"Forced INA219" in f.payload for f in frames if f.ftype == m.T_LOG)
+    cap = m.Capture(chip="INA219", r_shunt=0.1)
+    for f in frames:
+        if f.ftype == m.T_SAMPLES:
+            cap.add_frame(*m.decode_samples(f.payload))
+    assert m.capture_stats(cap).avg_a == pytest.approx(0.085, abs=0.006)

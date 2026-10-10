@@ -25,6 +25,8 @@ import struct
 from array import array
 from dataclasses import dataclass, field
 
+from .validation import DomainError
+
 SYNC = b"\xB5\x42"
 T_HELLO, T_SAMPLES, T_LOG = 0x01, 0x02, 0x03
 MAX_PAYLOAD = 1024
@@ -65,6 +67,14 @@ class Frame:
     payload: bytes
 
 
+def _plausible_header(ftype: int, length: int) -> bool:
+    if length > MAX_PAYLOAD:
+        return False
+    if ftype == T_SAMPLES:
+        return length >= 5 and (length - 5) % SAMPLE_SIZE == 0 and (length - 5) // SAMPLE_SIZE <= 255
+    return ftype in (T_HELLO, T_LOG) and length <= 512
+
+
 class FrameParser:
     """Incremental parser: feed it raw serial bytes, get whole frames back.
 
@@ -93,7 +103,8 @@ class FrameParser:
             if len(self.buf) < 5:
                 return out
             ftype, length = struct.unpack_from("<BH", self.buf, 2)
-            if length > MAX_PAYLOAD:
+            if not _plausible_header(ftype, length):
+                # sync bytes inside junk: don't wait for a frame that can't exist, resync now
                 self.bad_frames += 1
                 del self.buf[:1]
                 continue
@@ -187,6 +198,8 @@ class Capture:
 
     def add_frame(self, t0_us: int, samples: list[tuple[int, int, int]]) -> int:
         """Append decoded raw samples; returns how many were added."""
+        if not (isinstance(self.r_shunt, (int, float)) and math.isfinite(self.r_shunt) and self.r_shunt > 0):
+            raise DomainError("shunt resistance must be a positive number")
         chip = CHIPS[self.chip]
         t_us = t0_us
         for k, (dt, sh, bus) in enumerate(samples):
@@ -208,9 +221,17 @@ class Capture:
         return len(samples)
 
     def add_values(self, t_s: list[float], i_a: list[float], v_v: list[float] | None = None) -> None:
+        v_v = v_v if v_v is not None else [0.0] * len(t_s)
+        if not len(t_s) == len(i_a) == len(v_v):
+            raise DomainError("time, current and voltage lists must be the same length")
+        for name, seq in (("time", t_s), ("current", i_a), ("voltage", v_v)):
+            if not all(math.isfinite(x) for x in seq):
+                raise DomainError(f"{name} contains NaN or infinity")
+        if any(b < a for a, b in zip(t_s, t_s[1:])) or (len(self.t) and t_s and t_s[0] < self.t[-1]):
+            raise DomainError("timestamps must increase")
         self.t.extend(t_s)
         self.i.extend(i_a)
-        self.v.extend(v_v if v_v is not None else [0.0] * len(t_s))
+        self.v.extend(v_v)
         self._trim()
 
     def _trim(self) -> None:
@@ -258,8 +279,12 @@ class Capture:
             meta = parse_hello(lines[0].lstrip("# ").replace("benchbuddy capture v1", "").encode())
             cap.chip = meta.get("chip", cap.chip) if meta.get("chip") in CHIPS else cap.chip
             try:
-                cap.r_shunt = float(meta.get("shunt_ohm", cap.r_shunt))
-                cap.zero_a = float(meta.get("zero_a", 0.0))
+                r_sh = float(meta.get("shunt_ohm", cap.r_shunt))
+                zero = float(meta.get("zero_a", 0.0))
+                if math.isfinite(r_sh) and r_sh > 0:
+                    cap.r_shunt = r_sh
+                if math.isfinite(zero):
+                    cap.zero_a = zero
             except ValueError:
                 pass
             lines = lines[1:]
@@ -268,12 +293,20 @@ class Capture:
         if not header or [h.strip().lower() for h in header[:2]] != ["t_s", "current_a"]:
             raise ValueError("not a BenchBuddy capture (expected columns t_s,current_a[,bus_v])")
         t, i, v = [], [], []
-        for row in rows:
+        for n, row in enumerate(rows, start=2):
             if not row:
                 continue
-            t.append(float(row[0]))
-            i.append(float(row[1]))
-            v.append(float(row[2]) if len(row) > 2 and row[2] else 0.0)
+            try:
+                vals = [float(row[0]), float(row[1]), float(row[2]) if len(row) > 2 and row[2] else 0.0]
+            except ValueError:
+                raise DomainError(f"line {n}: not a number") from None
+            if not all(math.isfinite(x) for x in vals):
+                raise DomainError(f"line {n}: contains NaN or infinity")
+            t.append(vals[0])
+            i.append(vals[1])
+            v.append(vals[2])
+            if len(t) > cap.max_samples:
+                raise DomainError(f"capture has more than {cap.max_samples:,} samples")
         if len(t) < 2:
             raise ValueError("capture has fewer than 2 samples")
         if any(b < a for a, b in zip(t, t[1:])):

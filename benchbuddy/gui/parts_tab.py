@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from html import escape as esc
 from pathlib import Path
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QPixmap
-from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog,
+from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog,
                              QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
                              QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit,
                              QPushButton, QSizePolicy, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QVBoxLayout,
@@ -167,7 +168,7 @@ class PhotoIdentifyDialog(QDialog):
 
     # ----------------------------------------------------------------- results
     def _on_failed(self, msg: str) -> None:
-        self.status.setText(f"Couldn't read the photo: {msg}")
+        self.status.setText(f"Couldn't read the photo: {esc(str(msg))}")
 
     def _on_done(self, tokens: list) -> None:
         self.tokens = tokens
@@ -347,8 +348,8 @@ class PartsTab(QWidget):
             self.decode.hide()
             return
         self.decode.show()
-        html = "".join(f"<p style='margin:2px 0'>🔎 <b>{m.title}</b> "
-                       f"<span class='muted'>— {m.detail}</span></p>" for m in guesses)
+        html = "".join(f"<p style='margin:2px 0'>🔎 <b>{esc(m.title)}</b> "
+                       f"<span class='muted'>— {esc(m.detail)}</span></p>" for m in guesses)
         self.decode.show_html(html)
 
     def show_detail(self) -> None:
@@ -359,21 +360,23 @@ class PartsTab(QWidget):
             return
         rows = [("Package", p.package), ("Key specs", p.specs), ("Top markings", p.markings),
                 ("In stock", f"{p.qty}" if p.qty else "none logged"), ("Location", p.location)]
-        body = "".join(f"<tr><td class='muted' style='padding-right:10px'>{k}</td><td>{v or '—'}</td></tr>" for k, v in rows)
-        notes = f"<p>{p.notes}</p>" if p.notes else ""
+        # everything from the database is text, never markup (it can arrive via CSV import)
+        body = "".join(f"<tr><td class='muted' style='padding-right:10px'>{k}</td><td>{esc(str(v or '—'))}</td></tr>"
+                       for k, v in rows)
+        notes = f"<p>{esc(p.notes)}</p>" if p.notes else ""
         tag = " <span class='muted'>(your part)</span>" if p.user_added else ""
         link = self.db.datasheet_link(p)
         link_text = "Open datasheet" if p.datasheet_url.strip() else "Search for datasheet"
         photo = ""
         if p.photo_path:
             f = Path(p.photo_path)
-            photo = (f"<p><img src='{f.as_uri()}' width='240'></p>" if f.is_file()
+            photo = (f"<p><img src='{esc(f.as_uri(), quote=True)}' width='240'></p>" if f.is_file()
                      else "<p class='muted'>(the attached photo file is missing)</p>")
         mark_note = ("<p class='muted'>SMD marking codes vary between manufacturers: confirm the package "
                      "and pinout before relying on one.</p>") if p.markings else ""
-        self.detail.show_html(f"<h2 style='margin:0'>{p.part_number}{tag}</h2><p>{p.description}</p>"
+        self.detail.show_html(f"<h2 style='margin:0'>{esc(p.part_number)}{tag}</h2><p>{esc(p.description)}</p>"
                               f"<table cellspacing=3>{body}</table>{notes}{photo}"
-                              f"<p><a href='{link}'>{link_text} ↗</a></p>{mark_note}"
+                              f"<p><a href='{esc(link, quote=True)}'>{link_text} ↗</a></p>{mark_note}"
                               "<p class='muted'>Specs are typical values: confirm against the datasheet "
                               "before designing around them.</p>")
 

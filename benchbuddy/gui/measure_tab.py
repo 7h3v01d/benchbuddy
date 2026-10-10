@@ -419,11 +419,17 @@ class MeasureTab(QWidget):
         self.shunt.textChanged.connect(self._shunt_changed)
         self.status = QLabel("Not connected")
         self.status.setProperty("role", "muted")
+        self.force_btn = QPushButton("Force INA219…")
+        self.force_btn.setToolTip("An INA219 that isn't at its power-on settings can't be identified safely. "
+                                  "Use this only if that's what is wired.")
+        self.force_btn.clicked.connect(self.force_ina219)
+        self.force_btn.hide()
         top = QHBoxLayout()
         for w in (QLabel("Port:"), self.port_combo, refresh, self.connect_btn, QLabel("Mode:"), self.mode_combo,
                   QLabel("Shunt:"), self.shunt):
             top.addWidget(w)
         top.addWidget(self.status, 1)
+        top.addWidget(self.force_btn)
 
         # ---------------------------------------------------------- record
         self.rec_btn = QPushButton("● Record")
@@ -602,6 +608,7 @@ class MeasureTab(QWidget):
         self._worker, self._thread = None, None
         self.hello = {}
         self.connect_btn.setText("Connect")
+        self.force_btn.hide()
         self.rec_btn.blockSignals(True)
         self.rec_btn.setChecked(False)
         self.rec_btn.setText("● Record")
@@ -639,8 +646,10 @@ class MeasureTab(QWidget):
         if not chip:
             return
         if chip == "NONE":
-            self.status.setText("Meter found, but no INA219/INA226 on its I2C bus: check the wiring")
+            self.status.setText("Meter found, but no INA219/INA226 identified on its I2C bus: check the wiring")
+            self.force_btn.show()
             return
+        self.force_btn.hide()
         c = mt.CHIPS[chip]
         r = self._r_shunt()
         period = int(self.hello.get("period_us", "0") or 0)
@@ -648,6 +657,15 @@ class MeasureTab(QWidget):
         demo = " · DEMO" if self.hello.get("sim") else ""
         self.status.setText(f"{chip} @ {self.hello.get('addr', '?')} · {self.hello.get('mode', '?')}{rate} · "
                             f"range ±{format_value(c.full_scale_a(r), 'A')} · LSB {format_value(c.lsb_a(r), 'A')}{demo}")
+
+    def force_ina219(self) -> None:
+        ok = QMessageBox.question(
+            self, "Force INA219",
+            "The meter will treat the first device answering at 0x40–0x4F as an INA219 and write its "
+            "configuration register.\n\nOnly do this if an INA219 is what's wired: another chip at that "
+            "address (a PCA9685 servo driver, say) would be reconfigured.\n\nContinue?")
+        if ok == QMessageBox.StandardButton.Yes:
+            self.commandRequested.emit("FORCE INA219")
 
     # ---------------------------------------------------------- recording
     def set_recording(self, on: bool) -> None:

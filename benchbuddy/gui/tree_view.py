@@ -7,6 +7,8 @@ rating with a utilisation bar, and its border/edge colour carries the status.
 
 from __future__ import annotations
 
+import html
+
 from dataclasses import dataclass, field
 
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
@@ -205,8 +207,9 @@ class PowerTreeView(QWidget):
             self._hover = n
             self.setCursor(Qt.CursorShape.PointingHandCursor if n and n.is_rail else Qt.CursorShape.ArrowCursor)
             self.update()
-        if n:
-            QToolTip.showText(e.globalPosition().toPoint(), n.tip, self)
+        if n:   # names are user text: show them as text, never as markup
+            tip = "<p style='white-space:pre-wrap'>" + html.escape(n.tip).replace("\n", "<br>") + "</p>"
+            QToolTip.showText(e.globalPosition().toPoint(), tip, self)
         else:
             QToolTip.hideText()
 

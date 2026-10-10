@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPlainTextEdit, QTa
 
 from ..core import resistors as res
 from ..core.units import format_rkm, format_value, parse_value
-from .widgets import (STATUS_COLORS, ResistorWidget, ResultView, ValueEdit, form, group, status_html)
+from .widgets import (STATUS_COLORS, guarded, ResistorWidget, ResultView, ValueEdit, form, group, status_html)
 
 BAND_COUNTS = ["4", "5", "6", "3"]
 
@@ -89,6 +89,7 @@ class ResistorTab(QWidget):
             self.dec_row.addWidget(holder)
         self._recalc_decode()
 
+    @guarded("dec_out")
     def _recalc_decode(self) -> None:
         bands = [c.currentText() for c in self.dec_combos]
         self.dec_widget.set_bands(bands)
@@ -128,6 +129,7 @@ class ResistorTab(QWidget):
         self._recalc_encode()
         return w
 
+    @guarded("enc_out")
     def _recalc_encode(self) -> None:
         v = self.enc_value.value()
         if v is None:
@@ -159,6 +161,7 @@ class ResistorTab(QWidget):
         self._recalc_smd()
         return w
 
+    @guarded("smd_out")
     def _recalc_smd(self) -> None:
         code = self.smd_in.text().strip()
         if not code:
@@ -191,6 +194,7 @@ class ResistorTab(QWidget):
         self._recalc_standard()
         return w
 
+    @guarded("std_out")
     def _recalc_standard(self) -> None:
         v = self.std_in.value()
         if not v or v <= 0:
@@ -222,6 +226,7 @@ class ResistorTab(QWidget):
         self._recalc_combine()
         return w
 
+    @guarded("comb_out")
     def _recalc_combine(self) -> None:
         raw = self.comb_in.toPlainText().replace(",", " ").split()
         try:
@@ -273,6 +278,7 @@ class ResistorTab(QWidget):
         self._recalc_divider_find()
         return w
 
+    @guarded("div_out")
     def _recalc_divider(self) -> None:
         vin, r1, r2 = self.div_vin.value(), self.div_r1.value(), self.div_r2.value()
         if None in (vin, r1, r2):
@@ -289,6 +295,7 @@ class ResistorTab(QWidget):
             f"<p class='muted'>ESP32 ADC pins are 3.3 V max (and non-linear above ~3.1 V). "
             f"Keep R1+R2 ≥ 10 kΩ for battery monitoring so the divider doesn't drain the cell.</p>")
 
+    @guarded("fnd_out")
     def _recalc_divider_find(self) -> None:
         vin, vout = self.fnd_vin.value(), self.fnd_vout.value()
         if not vin or not vout:
@@ -326,6 +333,7 @@ class ResistorTab(QWidget):
         self._recalc_led()
         return w
 
+    @guarded("led_out")
     def _recalc_led(self) -> None:
         vs, vf, i = self.led_vs.value(), self.led_vf.value(), self.led_i.value()
         if None in (vs, vf, i):

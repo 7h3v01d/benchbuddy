@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from PyQt6.QtWidgets import QComboBox, QLabel, QPlainTextEdit, QTabWidget, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QLabel, QPlainTextEdit, QTabWidget, QVBoxLayout, QWidget
 
 from ..core import capacitors as cap
 from ..core.units import format_value, parse_value
-from .widgets import ResultView, ValueEdit, form, group
+from .widgets import guarded, ResultView, ValueEdit, form, group
 
 
 class CapacitorTab(QWidget):
@@ -34,6 +34,7 @@ class CapacitorTab(QWidget):
         self._recalc_marking()
         return w
 
+    @guarded("mk_out")
     def _recalc_marking(self) -> None:
         code = self.mk_in.text().strip()
         if not code:
@@ -70,6 +71,7 @@ class CapacitorTab(QWidget):
         self._recalc_rc()
         return w
 
+    @guarded("rc_out")
     def _recalc_rc(self) -> None:
         r, c = self.rc_r.value(), self.rc_c.value()
         if not r or not c:
@@ -100,6 +102,7 @@ class CapacitorTab(QWidget):
         self._recalc_xc()
         return w
 
+    @guarded("xc_out")
     def _recalc_xc(self) -> None:
         c, f, v = self.xc_c.value(), self.xc_f.value(), self.xc_v.value()
         if not c or not f:
@@ -125,6 +128,7 @@ class CapacitorTab(QWidget):
         self._recalc_combine()
         return w
 
+    @guarded("cc_out")
     def _recalc_combine(self) -> None:
         try:
             vals = [parse_value(x) for x in self.cc_in.toPlainText().replace(",", " ").split()]
@@ -173,6 +177,7 @@ class CapacitorTab(QWidget):
         self._recalc_step()
         return w
 
+    @guarded("hu_out")
     def _recalc_holdup(self) -> None:
         i, t, v1, v2 = self.hu_i.value(), self.hu_t.value(), self.hu_v1.value(), self.hu_v2.value()
         if None in (i, t, v1, v2):
@@ -187,6 +192,7 @@ class CapacitorTab(QWidget):
                               f"(use ≈ {format_value(r.farads_needed * 2, 'F')} with a 2× margin). "
                               f"<span class='muted'>{r.note}</span>")
 
+    @guarded("st_out")
     def _recalc_step(self) -> None:
         di, t, dv = self.st_di.value(), self.st_t.value(), self.st_droop.value()
         if None in (di, t, dv):

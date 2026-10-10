@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .validation import DomainError, non_negative, number, positive
+
 import math
 from dataclasses import dataclass
 
@@ -85,6 +87,8 @@ def decode_color_bands(bands: list[str]) -> ColorDecode:
 
 def encode_color_bands(ohms: float, bands: int = 4, tolerance_pct: float = 5.0) -> list[str]:
     """Return band colours for a resistance value."""
+    number('resistance', ohms)
+    number('tolerance', tolerance_pct)
     if ohms <= 0:
         raise ValueError("resistance must be positive")
     if bands not in (4, 5):
@@ -159,6 +163,8 @@ SERIES = {"E12": E12, "E24": E24, "E96": E96}
 
 def nearest_standard(ohms: float, series: str = "E24") -> float:
     """Closest standard value (by ratio) in the given E-series."""
+    positive('resistance', ohms)
+    _series(series)
     if ohms <= 0:
         raise ValueError("resistance must be positive")
     table = SERIES[series]
@@ -174,6 +180,8 @@ def nearest_standard(ohms: float, series: str = "E24") -> float:
 
 def standard_neighbours(ohms: float, series: str = "E24") -> tuple[float, float]:
     """(next lower, next higher) standard values around `ohms`."""
+    positive('resistance', ohms)
+    _series(series)
     table = SERIES[series]
     exp = math.floor(math.log10(ohms))
     cands = sorted(float(f"{b * 10 ** e:.6g}") for e in (exp - 1, exp, exp + 1) for b in table)
@@ -185,10 +193,14 @@ def standard_neighbours(ohms: float, series: str = "E24") -> tuple[float, float]
 # ------------------------------------------------------- series / parallel / etc
 
 def series_resistance(values: list[float]) -> float:
+    _nonempty(values)
+    [non_negative('R', v) for v in values]
     return sum(values)
 
 
 def parallel_resistance(values: list[float]) -> float:
+    _nonempty(values)
+    [positive('R', v) for v in values]
     if any(v <= 0 for v in values):
         raise ValueError("resistances must be positive")
     return 1.0 / sum(1.0 / v for v in values)
@@ -208,6 +220,10 @@ class LedResult:
 
 def led_resistor(vsupply: float, vf: float, current_a: float, series: str = "E24") -> LedResult:
     """Current-limiting resistor for an LED (rounded UP to a standard value)."""
+    number('supply voltage', vsupply)
+    non_negative('LED forward voltage', vf)
+    number('current', current_a)
+    _series(series)
     if vsupply <= vf:
         raise ValueError("supply voltage must be higher than the LED forward voltage")
     if current_a <= 0:
@@ -228,6 +244,10 @@ class DividerResult:
 
 def divider_vout(vin: float, r1: float, r2: float, load_ohms: float | None = None) -> DividerResult:
     """Output of a resistive divider (R1 top, R2 bottom), optionally loaded."""
+    number('input voltage', vin)
+    positive('R1', r1)
+    positive('R2', r2)
+    positive('load', load_ohms, allow_none=True)
     if r1 <= 0 or r2 <= 0:
         raise ValueError("resistors must be positive")
     r2_eff = r2 if not load_ohms else parallel_resistance([r2, load_ohms])
@@ -239,6 +259,11 @@ def divider_vout(vin: float, r1: float, r2: float, load_ohms: float | None = Non
 def divider_find(vin: float, vout: float, series: str = "E24",
                  r_min: float = 1e3, r_max: float = 1e6) -> list[tuple[float, float, float, float]]:
     """Best (r1, r2, actual_vout, error_pct) combos for a target output, best first."""
+    number('input voltage', vin)
+    number('output voltage', vout)
+    _series(series)
+    positive('R min', r_min)
+    positive('R max', r_max)
     if not 0 < vout < vin:
         raise ValueError("need 0 < vout < vin")
     table = SERIES[series]
@@ -262,8 +287,21 @@ def divider_find(vin: float, vout: float, series: str = "E24",
 
 def power_rating_ok(ohms: float, volts: float | None = None, amps: float | None = None) -> float:
     """Dissipated power in a resistor given V or I."""
+    positive('resistance', ohms)
+    number('voltage', volts, allow_none=True)
+    number('current', amps, allow_none=True)
     if volts is not None:
         return volts ** 2 / ohms
     if amps is not None:
         return amps ** 2 * ohms
     raise ValueError("provide volts or amps")
+
+
+def _nonempty(values) -> None:
+    if not values:
+        raise DomainError("enter at least one value")
+
+
+def _series(name) -> None:
+    if name not in SERIES:
+        raise DomainError(f"unknown E-series {name!r}")

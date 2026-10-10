@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from html import escape as esc
 from pathlib import Path
 
 from PyQt6.QtCore import QMarginsF, QSizeF, Qt, QUrl, pyqtSignal
@@ -12,6 +14,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QFileDialog,
 
 from .. import __version__
 from ..core import power, report as report_mod
+from ..core.examples import example_project  # noqa: F401  (re-exported: older imports)
 from ..core.presets import (LOAD_PRESETS, REGULATOR_PRESETS, SOURCE_PRESETS, make_load,
                             make_rail)
 from ..core.units import parse_value
@@ -42,17 +45,6 @@ ENABLED = {
     "buck": {"Vout (V)", "Max (mA)", "Dropout / Min Vin (V)", "Eff (%)", "Iq (mA)"},
     "boost": {"Vout (V)", "Max (mA)", "Dropout / Min Vin (V)", "Eff (%)", "Iq (mA)"},
 }
-
-
-def example_project() -> power.Project:
-    usb = make_rail(SOURCE_PRESETS["USB 2.0 port (5 V, 500 mA)"], "USB 5V")
-    ldo = make_rail(REGULATOR_PRESETS["AMS1117-3.3 (LDO, 800 mA)"], "3V3", parent="USB 5V")
-    loads = [
-        make_load("ESP32 DevKit (WROOM-32)", "3V3"),
-        make_load("SSD1306 OLED 128x64 (I2C)", "3V3"),
-        make_load("BME280 / BMP280", "3V3"),
-    ]
-    return power.Project([usb, ldo], loads)
 
 
 class PowerTab(QWidget):
@@ -228,9 +220,12 @@ class PowerTab(QWidget):
     def _num(text: str) -> float:
         t = text.strip()
         try:
-            return float(t)
+            v = float(t)
         except ValueError:
-            return parse_value(t)
+            v = parse_value(t)
+        if not math.isfinite(v):
+            raise ValueError("not a finite number")
+        return v
 
     def rail_names(self) -> list[str]:
         return [r.name for r in self.project.rails]
@@ -390,7 +385,7 @@ class PowerTab(QWidget):
                 attr = {"Vout (V)": "v_out", "Max (mA)": "max_ma", "R int (Ω)": "r_internal_ohm",
                         "Iq (mA)": "iq_ma", "θJA (°C/W)": "theta_ja"}[col]
                 setattr(rail, attr, self._num(text))
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, OverflowError) as exc:
             self.status_message(f"Couldn't use '{text}': {exc}")
             self.refresh_all()
             return
@@ -406,13 +401,16 @@ class PowerTab(QWidget):
             if col == "Name":
                 load.name = text
             elif col == "Qty":
-                load.qty = max(int(self._num(text)), 0)
+                q = self._num(text)
+                if not q.is_integer():
+                    raise ValueError("quantity must be a whole number")
+                load.qty = int(q)
             elif col == "Duty (%)":
-                load.duty = min(max(self._num(text) / 100, 0.0), 1.0)
+                load.duty = self._num(text) / 100       # out-of-range values are reported, not clamped
             else:
                 attr = {"Active (mA)": "i_active_ma", "Peak (mA)": "i_peak_ma", "Sleep (mA)": "i_sleep_ma"}[col]
-                setattr(load, attr, max(self._num(text), 0.0))
-        except (ValueError, KeyError) as exc:
+                setattr(load, attr, self._num(text))
+        except (ValueError, KeyError, OverflowError) as exc:
             self.status_message(f"Couldn't use '{text}': {exc}")
             self.refresh_all()
             return
@@ -517,7 +515,7 @@ class PowerTab(QWidget):
         if not path:
             return
         try:
-            self.project = power.Project.load(path)
+            self.project = power.Project.load(path, strict=False)   # open it, then show what's wrong
         except Exception as exc:  # noqa: BLE001 - show any file problem to the user
             QMessageBox.warning(self, "Couldn't open", str(exc))
             return
@@ -539,7 +537,7 @@ class PowerTab(QWidget):
             path += ".pdf"
         try:
             self.export_report(path)
-        except (OSError, power.ProjectError) as exc:
+        except (OSError, ValueError, ArithmeticError) as exc:
             QMessageBox.warning(self, "Couldn't export", str(exc))
             return
         self.status_message(f"Report written to {path}")
@@ -593,7 +591,7 @@ class PowerTab(QWidget):
     def recalc(self) -> None:
         try:
             report = power.analyse(self.project)
-        except power.ProjectError as exc:
+        except (ValueError, ArithmeticError) as exc:     # ProjectError, or a solver failure
             self.result_table.setRowCount(0)
             for view in self._tree_views():
                 view.show_message(f"✖ {exc}")
@@ -673,10 +671,10 @@ class PowerTab(QWidget):
                 if col == 1:
                     item.setForeground(QBrush(QColor(STATUS_COLORS[rr.status])))
                 t.setItem(row, col, item)
-            html.append(f"<h4 style='margin:10px 0 2px 0'>{r.name} "
+            html.append(f"<h4 style='margin:10px 0 2px 0'>{esc(r.name)} "
                         f"<span class='muted'>({r.kind}, {r.v_out:g} V)</span></h4>")
             for level, text in rr.messages:
-                html.append(status_html(level, text))
+                html.append(status_html(level, esc(text)))          # messages quote user-typed names
         t.resizeColumnsToContents()
         self.details.show_html("".join(html))
         worst = report.status

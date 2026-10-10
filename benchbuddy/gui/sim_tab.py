@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 from PyQt6.QtCore import QTimer, Qt
@@ -9,7 +10,6 @@ from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton, QScrol
                              QVBoxLayout, QWidget)
 
 from ..core import brownout as bo
-from ..core.units import format_value
 from .plot import PlotWidget
 from .widgets import ResultView, ValueEdit, form, group, status_html
 
@@ -244,7 +244,7 @@ class SimTab(QWidget):
         if any(v is None for v in vals.values()):
             return None
         n = self.f_n.value()
-        if n is None:
+        if n is None or not math.isfinite(n) or not n.is_integer():
             return None
         p = bo.SimParams(reg_kind=self.kind.currentText(), n_bursts=int(n), **vals)
         if self._profile is not None:
@@ -286,15 +286,23 @@ class SimTab(QWidget):
             return
         try:
             self.result = bo.simulate(p)
-        except ValueError as exc:
+        except ValueError as exc:                 # SimulationError: a clear, user-facing reason
             self.plot.set_result(None)
             self.verdict.show_error(str(exc))
+            return
+        except ArithmeticError as exc:            # belt and braces: never let maths kill the GUI
+            self.plot.set_result(None)
+            self.verdict.show_error(f"These settings broke the solver ({type(exc).__name__}). "
+                                    "Check for extreme values.")
             return
         self.params = p
         self.plot.set_result(self.result)
         html = "".join(status_html(level, text) for level, text in self.result.notes)
         if self.result.brownout:
-            uf, _ = bo.suggest_output_cap(p)
+            try:
+                uf, _ = bo.suggest_output_cap(p)
+            except (ValueError, ArithmeticError):
+                uf = None
             if uf:
                 html += status_html("ok", f"Try ≥ {uf} µF of low-ESR capacitance on the output (press the button below to "
                                           f"confirm).")
@@ -309,7 +317,7 @@ class SimTab(QWidget):
             return
         try:
             base = bo.simulate(p)
-        except ValueError as exc:
+        except (ValueError, ArithmeticError) as exc:
             self.verdict.show_error(str(exc))
             return
         if not base.brownout:

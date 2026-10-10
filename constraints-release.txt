@@ -1,0 +1,14 @@
+# Exact versions a release build is made with. The test suite passed against these.
+# Broad ranges for ordinary installs stay in pyproject.toml / requirements.txt.
+# Used by build.bat:  pip install -r requirements-dev.txt -c constraints-release.txt
+# Checked to resolve as Windows x64 wheels for Python 3.11.
+PyQt6==6.11.0
+PyQt6-Qt6==6.11.2
+PyQt6-sip==13.13.0
+pyserial==3.5
+pillow==12.3.0
+pytesseract==0.3.13
+pytest==9.1.1
+hypothesis==6.168.5
+pyinstaller==6.22.3
+pyinstaller-hooks-contrib==2026.8

@@ -139,8 +139,9 @@ def test_basic_esp32_on_usb():
     assert r33.peak_ma == pytest.approx(500)
     usb = rep.by_name("USB")
     assert usb.avg_ma == pytest.approx(80 + 5)            # + AMS1117 Iq (5 mA)
-    # LDO dissipation: (5-3.3)*80mA + 5*5mA
-    assert r33.dissipation_avg_w == pytest.approx(1.7 * 0.08 + 5 * 0.005)
+    # LDO dissipation uses the *sagged* input: 5 V - 85 mA × 0.3 Ω = 4.9745 V
+    vin = 5 - 0.085 * 0.3
+    assert r33.dissipation_avg_w == pytest.approx((vin - 3.3) * 0.08 + vin * 0.005)
     assert rep.ok
 
 
@@ -181,8 +182,10 @@ def test_buck_efficiency_math():
     buck.iq_ma = 0
     p = power.Project([src, buck], [power.Load("x", "5V", 1, 1000, 1000)])
     rep = power.analyse(p)
-    # 5 V * 1 A / 0.85 / 12 V
-    assert rep.by_name("12V").avg_ma == pytest.approx(5 * 1000 / 0.85 / 12)
+    # self-consistent: I = P / (η·V) with V = 12 V − 0.15 Ω·I  →  0.15·I² − 12·I + P/η = 0
+    p_in = 5 * 1.0 / 0.85                                 # W
+    i = (12 - math.sqrt(144 - 4 * 0.15 * p_in)) / (2 * 0.15)
+    assert rep.by_name("12V").avg_ma == pytest.approx(i * 1000, rel=1e-6)
 
 
 def test_validation_errors():
@@ -393,7 +396,7 @@ def test_suggest_output_cap_fixes_brownout():
 
 
 def test_from_power_rail():
-    from benchbuddy.gui.power_tab import example_project
+    from benchbuddy.core.examples import example_project
     proj = example_project()
     p = bo.from_power_rail(proj, "3V3")
     assert p.reg_kind == "ldo" and p.v_set == 3.3 and p.v_src == 5.0
@@ -815,3 +818,19 @@ def test_brownout_replays_measured_profile():
         bo.simulate(bo.replace(base, profile_t=(0.0, 1.0), profile_i=(0.1,)))
     with pytest.raises(ValueError):
         bo.with_profile(base, [0.0], [0.1])
+
+
+def test_tesseract_lookup_honours_override_and_windows_defaults(tmp_path, monkeypatch):
+    from benchbuddy.core import ocr
+    exe = tmp_path / "tesseract.exe"
+    exe.write_text("")
+    monkeypatch.setenv("BENCHBUDDY_TESSERACT", str(exe))
+    assert ocr.find_tesseract() == str(exe)
+    monkeypatch.delenv("BENCHBUDDY_TESSERACT")
+    monkeypatch.setattr(ocr.shutil, "which", lambda name: None)
+    monkeypatch.setattr(ocr.sys, "platform", "win32")
+    (tmp_path / "Tesseract-OCR").mkdir()
+    default = tmp_path / "Tesseract-OCR" / "tesseract.exe"
+    default.write_text("")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path))
+    assert ocr.find_tesseract() == str(default)

@@ -19,6 +19,7 @@ static void run_for(double seconds) {
 int main(int argc, char **argv) {
   g_chip = argc > 1 ? atoi(argv[1]) : 226;
   setup();
+  if (g_chip == 2191) { Serial.rx += "FORCE INA219\n"; run_for(0.01); }
   Serial.rx += "start\n"; run_for(0.5);                 // lower case on purpose: firmware upper-cases
   Serial.rx += "MODE FAST\n"; run_for(0.3);
   Serial.rx += "STOP\nHELLO\nBOGUS\n"; run_for(0.05);

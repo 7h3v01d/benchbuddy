@@ -1,6 +1,7 @@
 @echo off
 setlocal
+rem Creates .venv with everything for running, testing and building.
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe -m pip install pytest pillow
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 pause

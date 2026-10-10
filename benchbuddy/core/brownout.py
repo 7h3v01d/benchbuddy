@@ -26,8 +26,9 @@ import bisect
 import math
 from dataclasses import dataclass, field, replace
 
+from .validation import DomainError, finite_all, integer, number
+
 COMMON_CAP_UF = [10, 22, 47, 100, 220, 330, 470, 680, 1000, 2200, 4700]
-ESR_FLOOR = 0.005     # ohms; keeps the no-regulator solver well behaved
 
 
 @dataclass
@@ -74,11 +75,17 @@ class SimParams:
 def with_profile(p: SimParams, t: list[float], i: list[float], label: str = "measured") -> SimParams:
     """Drive the simulation with a measured current waveform instead of square bursts."""
     if len(t) != len(i) or len(t) < 2:
-        raise ValueError("a profile needs at least 2 (time, current) points of equal length")
+        raise SimulationError("a profile needs at least 2 (time, current) points of equal length")
+    t = finite_all("profile time", t, SimulationError)
+    i = finite_all("profile current", i, SimulationError)
+    # small negative readings are meter noise around zero; big ones mean a reversed shunt
+    noise = max(0.05 * max(i), 0.001)
+    if min(i) < -noise:
+        raise SimulationError(f"profile has currents down to {min(i) * 1000:.0f} mA: is the shunt wired backwards?")
     t0 = t[0]
     tt = tuple(x - t0 for x in t)
-    return replace(p, profile_t=tt, profile_i=tuple(max(x, 0.0) for x in i), profile_label=label,
-                   i_base_a=max(min(i), 0.0), i_peak_a=max(max(i), 0.0))
+    ii = tuple(max(x, 0.0) for x in i)
+    return replace(p, profile_t=tt, profile_i=ii, profile_label=label, i_base_a=min(ii), i_peak_a=max(ii))
 
 
 def without_profile(p: SimParams) -> SimParams:
@@ -112,36 +119,64 @@ def _load_current(p: SimParams, t: float) -> float:
     if p.profile_t:
         k = bisect.bisect_right(p.profile_t, t) - 1      # sample-and-hold between measured points
         return p.profile_i[min(max(k, 0), len(p.profile_i) - 1)]
-    if t >= p.t_first_s:
+    # only the requested bursts: the window ends exactly where burst n+1 would begin, and a
+    # rounding-dependent final sample must not simulate a sliver of a burst nobody asked for
+    if p.t_first_s <= t < p.t_first_s + p.n_bursts * p.period_s:
         phase = (t - p.t_first_s) % p.period_s
         if phase < p.burst_s:
             return p.i_peak_a
     return p.i_base_a
 
 
+class SimulationError(DomainError):
+    """Parameters the simulator can't model. The GUI shows these instead of crashing."""
+
+
 def validate(p: SimParams) -> None:
+    """Exhaustive, finite-aware parameter check: nothing invalid reaches the integrator."""
+    E = SimulationError
     if p.reg_kind not in ("ldo", "switcher", "none"):
-        raise ValueError("regulator type must be ldo, switcher or none")
-    if min(p.r_src, p.r_out) <= 0:
-        raise ValueError("source and regulator output resistances must be above 0 Ω")
-    if p.c_out_f <= 0:
-        raise ValueError("output capacitance must be above 0")
-    if p.esr_out < 0 or p.esr_in < 0 or p.c_in_f < 0:
-        raise ValueError("ESR and input capacitance can't be negative")
+        raise E("regulator type must be ldo, switcher or none")
+    number("source voltage", p.v_src, gt=0, le=1000, error=E)
+    number("source resistance", p.r_src, gt=0, le=1e6, error=E)
+    number("input capacitance", p.c_in_f, ge=0, le=10, error=E)
+    number("input cap ESR", p.esr_in, ge=0, le=1e3, error=E)
+    number("output voltage", p.v_set, gt=0, le=1000, error=E)
+    number("LDO dropout", p.dropout_v, ge=0, le=100, error=E)
+    number("rated current", p.i_rated_a, gt=0, le=1000, error=E)
+    number("regulator output impedance", p.r_out, gt=0, le=1e6, error=E)
+    number("response time", p.t_response_s, gt=0, le=1, error=E)
+    number("current limit", p.i_limit_a, gt=0, le=1000, error=E)
+    number("quiescent current", p.iq_a, ge=0, le=100, error=E)
+    number("switcher efficiency", p.efficiency, gt=0, le=1, error=E)
+    number("switcher minimum input", p.vin_min, ge=0, le=1000, error=E)
+    number("output capacitance", p.c_out_f, ge=1e-12, le=10, error=E)
+    number("output cap ESR", p.esr_out, ge=0, le=1e3, error=E)
+    number("brown-out threshold", p.v_threshold, ge=0, le=1000, error=E)
     if p.profile_t is not None or p.profile_i is not None:
         if not p.profile_t or not p.profile_i or len(p.profile_t) != len(p.profile_i) or len(p.profile_t) < 2:
-            raise ValueError("measured profile is empty or malformed")
-        if any(b < a for a, b in zip(p.profile_t, p.profile_t[1:])) or p.profile_t[-1] <= 0:
-            raise ValueError("measured profile times must increase")
+            raise E("measured profile is empty or malformed")
+        ts = finite_all("profile time", p.profile_t, E)
+        cs = finite_all("profile current", p.profile_i, E)
+        if any(b < a for a, b in zip(ts, ts[1:])) or ts[-1] <= 0:
+            raise E("measured profile times must increase")
+        if min(cs) < 0 or max(cs) > 1000:
+            raise E("measured profile currents must be between 0 and 1000 A")
+        if ts[-1] > 120:
+            raise E("measured profile is longer than 120 s: select a shorter stretch")
     else:
-        if p.burst_s <= 0 or p.period_s <= p.burst_s:
-            raise ValueError("burst length must be positive and shorter than the period")
+        number("base current", p.i_base_a, ge=0, le=1000, error=E)
+        number("burst peak current", p.i_peak_a, ge=0, le=1000, error=E)
+        number("burst length", p.burst_s, gt=0, error=E)
+        number("burst period", p.period_s, gt=0, error=E)
+        number("first burst time", p.t_first_s, ge=0, error=E)
+        integer("number of bursts", p.n_bursts, ge=1, le=10_000, error=E)
+        if p.period_s <= p.burst_s:
+            raise E("burst length must be shorter than the period")
         if p.i_peak_a < p.i_base_a:
-            raise ValueError("peak current must be at least the base current")
-    if p.v_src <= 0 or p.v_set <= 0:
-        raise ValueError("voltages must be positive")
-    if p.n_bursts < 1 and not p.has_profile:
-        raise ValueError("simulate at least one burst")
+            raise E("peak current must be at least the base current")
+        if p.duration_s > 120:
+            raise E(f"that's {p.duration_s:.0f} s of simulated time: keep it under 120 s")
 
 
 def simulate(p: SimParams, max_points: int = 2000, max_steps: int = 400_000) -> SimResult:
@@ -155,11 +190,11 @@ def simulate(p: SimParams, max_points: int = 2000, max_steps: int = 400_000) -> 
         loop_gain = 1 + p.r_src / r_out_eff        # source resistance feeds back through the regulator
         dt = 0.1 * min(tau_out, tau_in, _event_scale(p), tau_reg / loop_gain)
     else:
-        e_out = max(p.esr_out, ESR_FLOOR)
-        e_in = max(p.esr_in, ESR_FLOOR)
-        tau_out = e_out * p.c_out_f
-        tau_in = e_in * p.c_in_f if p.c_in_f > 0 else float("inf")
+        tau_out = max(p.esr_out, 1e-3) * p.c_out_f
+        tau_in = max(p.esr_in, 1e-3) * p.c_in_f if p.c_in_f > 0 else float("inf")
         dt = 0.1 * min(tau_out, tau_in, _event_scale(p))
+    # dt is chosen for accuracy only: every update below is implicit (backward Euler or an exact
+    # exponential), so it stays stable even when a time constant is far shorter than the step.
     dt = min(max(dt, 20e-9), 2e-6)
     dur = p.duration_s
     steps = int(dur / dt)
@@ -195,17 +230,18 @@ def simulate(p: SimParams, max_points: int = 2000, max_steps: int = 400_000) -> 
         i_load = _load_current(p, t)
 
         if not lag:
-            # no regulator: source resistance feeds one node that holds both capacitors
-            e_in = max(p.esr_in, ESR_FLOOR)
-            e_out = max(p.esr_out, ESR_FLOOR)
-            g = 1 / p.r_src + 1 / e_out + (1 / e_in if has_cin else 0.0)
-            num = p.v_src / p.r_src - i_load + v_cout / e_out + (v_cin / e_in if has_cin else 0.0)
-            v_node = max(num / g, 0.0)
+            # No regulator: the source resistance feeds one node holding both capacitors.
+            # Backward Euler: each cap (ESR + C) looks like a conductance 1/(ESR + dt/C) to the
+            # node from its old voltage, which gives the node voltage in closed form.
+            go = 1 / (p.esr_out + dt / p.c_out_f)
+            gi = 1 / (p.esr_in + dt / p.c_in_f) if has_cin else 0.0
+            num = p.v_src / p.r_src - i_load + go * v_cout + gi * v_cin
+            v_node = max(num / (1 / p.r_src + go + gi), 0.0)
             v_in = v_out = v_node
             i_in = (p.v_src - v_node) / p.r_src
-            v_cout += dt * (v_node - v_cout) / (e_out * p.c_out_f)
+            v_cout = max(v_cout + go * (v_node - v_cout) * dt / p.c_out_f, 0.0)
             if has_cin:
-                v_cin += dt * (v_node - v_cin) / (e_in * p.c_in_f)
+                v_cin = max(v_cin + gi * (v_node - v_cin) * dt / p.c_in_f, 0.0)
         else:
             # input node terminal voltage (uses last step's regulator input current)
             if has_cin:
@@ -221,12 +257,21 @@ def simulate(p: SimParams, max_points: int = 2000, max_steps: int = 400_000) -> 
             else:
                 v_target = p.v_set if v_in >= p.vin_min else p.v_set * max(v_in, 0.0) / max(p.vin_min, 1e-6)
 
-            # regulator output current with first-order response lag
-            v_term = v_cout + p.esr_out * (i_reg - i_load)
-            i_cmd = min(max((v_target - v_term) / r_out_eff, 0.0), p.i_limit_a)
-            i_reg += dt / tau_reg * (i_cmd - i_reg)
-            i_reg = min(max(i_reg, 0.0), p.i_limit_a)
-            v_out = v_cout + p.esr_out * (i_reg - i_load)
+            # Regulator current lags its command (tau_reg) and charges the output cap. Both are
+            # linear, so take the backward-Euler step for the pair in closed form; if the command
+            # would sit outside [0, current limit], redo the step with it saturated there.
+            k, a = dt / p.c_out_f, dt / tau_reg
+            esr = p.esr_out
+            i_new = ((i_reg + a * (v_target - v_cout + (k + esr) * i_load) / r_out_eff)
+                     / (1 + a + a * (k + esr) / r_out_eff))
+            v_c_new = v_cout + k * (i_new - i_load)
+            i_cmd = (v_target - v_c_new - esr * (i_new - i_load)) / r_out_eff
+            if i_cmd > p.i_limit_a:
+                i_new = (i_reg + a * p.i_limit_a) / (1 + a)
+            elif i_cmd < 0:
+                i_new = i_reg / (1 + a)
+            i_reg = min(max(i_new, 0.0), p.i_limit_a)
+            v_out = v_cout + k * (i_reg - i_load) + esr * (i_reg - i_load)
 
             # current the regulator draws from its input
             if p.reg_kind == "switcher":
@@ -234,16 +279,21 @@ def simulate(p: SimParams, max_points: int = 2000, max_steps: int = 400_000) -> 
             else:
                 i_in_new = i_reg + p.iq_a
             if has_cin:
-                i_src = (p.v_src - v_in) / p.r_src
-                v_cin += dt * (i_src - i_in_new) / p.c_in_f
+                # input cap relaxes towards (Vsrc − R·Iin) with tau = (R + ESR)·C: exact update
+                target = p.v_src - p.r_src * i_in_new
+                tau_c = (p.r_src + p.esr_in) * p.c_in_f
+                v_cin = max(target + (v_cin - target) * math.exp(-dt / tau_c), 0.0)
             i_in = i_in_new
-            v_cout += dt * (i_reg - i_load) / p.c_out_f
+            # Nothing in this topology can drive the rail negative: once the load has pulled the
+            # output cap flat, the rail sits at 0 V (the chip is long since in brown-out).
+            v_cout = max(v_cout + k * (i_reg - i_load), 0.0)
+            v_out = max(v_out, 0.0)
 
         if nominal is None:
             nominal = v_out
         v_out_min = min(v_out_min, v_out)
         v_in_min = min(v_in_min, v_in)
-        if v_out < p.v_threshold:
+        if v_out < p.v_threshold and n < steps:          # count intervals, not sample points
             below += dt
         if n % stride == 0:
             t_list.append(t)

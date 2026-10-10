@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .validation import DomainError, non_negative, number, positive
+
 import math
 from dataclasses import dataclass
 
@@ -80,16 +82,24 @@ def decode_cap_code(code: str) -> CapDecode:
 # ------------------------------------------------------------------- RC / reactance
 
 def rc_time_constant(r_ohms: float, c_farads: float) -> float:
+    positive('R', r_ohms)
+    positive('C', c_farads)
     return r_ohms * c_farads
 
 
 def rc_cutoff_hz(r_ohms: float, c_farads: float) -> float:
+    positive('R', r_ohms)
+    positive('C', c_farads)
     return 1.0 / (2 * math.pi * r_ohms * c_farads)
 
 
 def rc_charge_time(r_ohms: float, c_farads: float, vstart_frac: float = 0.0,
                    vend_frac: float = 0.632) -> float:
     """Time for an RC to go from vstart_frac to vend_frac of the supply."""
+    positive('R', r_ohms)
+    positive('C', c_farads)
+    number('start fraction', vstart_frac)
+    number('end fraction', vend_frac)
     if not 0 <= vstart_frac < vend_frac < 1:
         raise ValueError("need 0 <= start < end < 1")
     tau = r_ohms * c_farads
@@ -97,22 +107,32 @@ def rc_charge_time(r_ohms: float, c_farads: float, vstart_frac: float = 0.0,
 
 
 def capacitor_reactance(c_farads: float, freq_hz: float) -> float:
+    positive('C', c_farads)
+    positive('frequency', freq_hz)
     return 1.0 / (2 * math.pi * freq_hz * c_farads)
 
 
 def capacitor_energy(c_farads: float, volts: float) -> float:
+    non_negative('C', c_farads)
+    number('voltage', volts)
     return 0.5 * c_farads * volts ** 2
 
 
 def series_capacitance(values: list[float]) -> float:
+    _nonempty(values)
+    [positive('C', v) for v in values]
     return 1.0 / sum(1.0 / v for v in values)
 
 
 def parallel_capacitance(values: list[float]) -> float:
+    _nonempty(values)
+    [non_negative('C', v) for v in values]
     return sum(values)
 
 
 def self_resonant_hz(c_farads: float, esl_henries: float) -> float:
+    positive('C', c_farads)
+    positive('ESL', esl_henries)
     return 1.0 / (2 * math.pi * math.sqrt(c_farads * esl_henries))
 
 
@@ -126,6 +146,10 @@ class HoldupResult:
 
 def holdup_capacitance(load_amps: float, hold_time_s: float, v_start: float, v_min: float) -> HoldupResult:
     """Capacitance needed to ride through an interruption: C = I*t / (Vstart - Vmin)."""
+    non_negative('load current', load_amps)
+    positive('hold time', hold_time_s)
+    number('start voltage', v_start)
+    non_negative('minimum voltage', v_min)
     if v_start <= v_min:
         raise ValueError("start voltage must exceed minimum voltage")
     c = load_amps * hold_time_s / (v_start - v_min)
@@ -134,6 +158,9 @@ def holdup_capacitance(load_amps: float, hold_time_s: float, v_start: float, v_m
 
 def bulk_cap_for_transient(delta_amps: float, response_time_s: float, allowed_droop_v: float) -> float:
     """C needed so a load step of delta_amps lasting response_time_s droops < allowed_droop_v."""
+    non_negative('current step', delta_amps)
+    positive('response time', response_time_s)
+    number('allowed droop', allowed_droop_v)
     if allowed_droop_v <= 0:
         raise ValueError("allowed droop must be positive")
     return delta_amps * response_time_s / allowed_droop_v
@@ -141,6 +168,8 @@ def bulk_cap_for_transient(delta_amps: float, response_time_s: float, allowed_dr
 
 def esr_droop(delta_amps: float, esr_ohms: float) -> float:
     """Instantaneous voltage step caused by capacitor ESR on a current step."""
+    non_negative('current step', delta_amps)
+    non_negative('ESR', esr_ohms)
     return delta_amps * esr_ohms
 
 
@@ -155,3 +184,8 @@ def esp32_decoupling_advice() -> list[str]:
         "Class 2 ceramics lose capacitance under DC bias — a 10 µF 6.3 V X5R on 5 V may only give ~3 µF.",
         "If you power from USB and see resets at Wi-Fi start-up, try a 470 µF electrolytic in parallel with a 10 µF ceramic across 5 V.",
     ]
+
+
+def _nonempty(values) -> None:
+    if not values:
+        raise DomainError("enter at least one value")

@@ -8,7 +8,12 @@
 //   HELLO   (0x01) "fw=1;chip=INA226;addr=0x40;mode=NORMAL;period_us=664;cfg=0x4097"
 //   SAMPLES (0x02) t0_us u32, n u8, n x { dt_us u16, shunt_raw i16, bus_raw u16 }
 //   LOG     (0x03) plain text
-// Commands (text lines from the PC): HELLO, START, STOP, MODE NORMAL, MODE FAST
+// Commands (text lines from the PC): HELLO, START, STOP, MODE NORMAL, MODE FAST, FORCE INA219
+//
+// Detection is read-only. INA226: TI manufacturer ID 0x5449 *and* die ID 0x226x (other TI
+// monitors such as the INA260 share the manufacturer ID). INA219: it has no ID register, so it
+// is only recognised by its power-on config (0x399F) or one of ours; an INA219 configured some
+// other way needs the explicit "FORCE INA219" command, which then writes its config.
 //
 // Modes
 //   NORMAL  shunt + bus every cycle.   INA226: 332 us + 332 us (~1.5 kHz).  INA219: 12-bit, 532 + 532 us (~940 Hz)
@@ -92,10 +97,16 @@ static void detectChip() {
   for (uint8_t a = 0x40; a <= 0x4F; a++) {
     if (!probe(a)) continue;
     addr = a;
-    uint16_t id = 0;
-    if (readReg(0xFE, id) && id == 0x5449) {           // TI manufacturer ID: only the INA226 has it
-      chip = CHIP_INA226;
-      return;
+    uint16_t id = 0, die = 0;
+    if (readReg(0xFE, id) && id == 0x5449) {           // a TI current monitor...
+      if (readReg(0xFF, die) && (die & 0xFFF0) == 0x2260) {
+        chip = CHIP_INA226;                             // ...and specifically an INA226
+        return;
+      }
+      char msg[96];
+      snprintf(msg, sizeof(msg), "TI device at 0x%02X is not an INA226 (die ID 0x%04X): ignored", a, die);
+      sendText(0x03, msg);
+      continue;
     }
     // INA219 has no ID register. Recognise it read-only by its config word: the power-on
     // default (0x399F) or one of ours (after an ESP32 reset the INA keeps our setting).
@@ -196,6 +207,20 @@ static void handleCommand(const char *cmd) {
     streaming = false;
   } else if (!strcmp(cmd, "HELLO")) {
     if (chip == CHIP_NONE) { detectChip(); applyMode(); }
+    sendHello();
+  } else if (!strcmp(cmd, "FORCE INA219")) {
+    // explicit opt-in: take the first device that answers and treat it as an INA219
+    for (uint8_t a = 0x40; a <= 0x4F; a++) {
+      if (probe(a)) {
+        addr = a;
+        chip = CHIP_INA219;
+        applyMode();
+        char msg[80];
+        snprintf(msg, sizeof(msg), "Forced INA219 at 0x%02X: make sure that's really what's wired", a);
+        sendText(0x03, msg);
+        break;
+      }
+    }
     sendHello();
   } else if (!strcmp(cmd, "MODE FAST") || !strcmp(cmd, "MODE NORMAL")) {
     flushBatch();

@@ -18,8 +18,9 @@ import tempfile
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
+from .images import check_image
 from .seed_extra import EXTRA_PARTS
 from .seed_parts import SEED_PARTS
 
@@ -158,7 +159,8 @@ class PartsDB:
 
     @staticmethod
     def datasheet_link(part: Part) -> str:
-        return part.datasheet_url.strip() or datasheet_search_url(part.part_number)
+        """A link that is safe to make clickable: the stored URL only if it's plain http(s)."""
+        return safe_url(part.datasheet_url) or datasheet_search_url(part.part_number)
 
     # --------------------------------------------------------------------- CRUD
     def get(self, part_id: int) -> Part | None:
@@ -221,12 +223,9 @@ class PartsDB:
         if part is None:
             raise ValueError("no such part")
         src = Path(source)
-        if not src.is_file():
-            raise ValueError(f"photo not found: {src}")
-        if src.suffix.lower() not in (".jpg", ".jpeg", ".png", ".bmp", ".gif", ".webp"):
-            raise ValueError("please choose an image file (jpg, png, bmp, gif or webp)")
+        ext = check_image(src)          # real type, size and pixel limits (ImageError is a ValueError)
         self._photos_dir.mkdir(parents=True, exist_ok=True)
-        dest = self._photos_dir / f"part{part_id}_{uuid.uuid4().hex[:12]}{src.suffix.lower()}"
+        dest = self._photos_dir / f"part{part_id}_{uuid.uuid4().hex[:12]}{ext}"
         shutil.copyfile(src, dest)
         if part.photo_path and Path(part.photo_path) != dest:
             self._delete_photo_file(part.photo_path)
@@ -254,8 +253,8 @@ class PartsDB:
             w = csv.writer(fh)
             w.writerow(CSV_FIELDS)
             for p in parts:
-                w.writerow([p.part_number, p.category, p.description, p.package, p.specs, p.markings,
-                            p.notes, p.qty, p.location, p.datasheet_url])
+                w.writerow([csv_safe(v) for v in (p.part_number, p.category, p.description, p.package, p.specs,
+                                                  p.markings, p.notes, p.qty, p.location, p.datasheet_url)])
         return len(parts)
 
     def import_csv(self, path: str | Path) -> ImportResult:
@@ -284,7 +283,7 @@ class PartsDB:
             if "part_number" not in mapping.values():
                 raise ValueError("no part number column found (expected a header like 'part_number' or 'Part')")
             for line_no, row in enumerate(reader, start=2):
-                data = {mapping[k]: (v or "").strip() for k, v in row.items() if k in mapping}
+                data = {mapping[k]: csv_unsafe((v or "").strip()) for k, v in row.items() if k in mapping}
                 pn = data.get("part_number", "")
                 if not pn:
                     res.skipped += 1
@@ -355,3 +354,31 @@ class PartsDB:
                 scored.append((score, p))
         scored.sort(key=lambda t: (-t[0], t[1].category, t[1].part_number))
         return scored[:limit]
+
+
+# ------------------------------------------------------------------ hardening
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
+def csv_safe(value):
+    """Stop spreadsheet apps treating a cell as a formula (=, +, -, @ ...) by prefixing a quote."""
+    if isinstance(value, str) and value.startswith(_FORMULA_START):
+        return "'" + value
+    return value
+
+
+def csv_unsafe(value: str) -> str:
+    """Undo csv_safe on import (a quote we added in front of a formula character)."""
+    if value.startswith("'") and value[1:2] and value[1] in "=+-@\t\r":
+        return value[1:]
+    return value
+
+
+def safe_url(url: str) -> str:
+    """The URL if it's an absolute http(s) link, else '' (no file:, javascript:, custom schemes)."""
+    u = (url or "").strip()
+    try:
+        parts = urlparse(u)
+    except ValueError:
+        return ""
+    return u if parts.scheme.lower() in ("http", "https") and parts.netloc else ""

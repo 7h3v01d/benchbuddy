@@ -3,6 +3,8 @@ I2C pull-ups and transistor base resistors."""
 
 from __future__ import annotations
 
+from .validation import DomainError, integer, non_negative, number, positive
+
 import math
 
 from .resistors import SERIES, nearest_standard, standard_neighbours
@@ -19,6 +21,12 @@ def adc_divider(vbat_max: float, adc_max: float, series: str = "E24",
     and, among similar errors, prefers larger resistors (less battery drain).
     Returns dicts: r1, r2, vout_at_max, error_pct, drain_ua, source_ohms.
     """
+    number('battery voltage', vbat_max)
+    number('ADC max', adc_max)
+    _series(series)
+    positive('R min', r_min)
+    positive('R max', r_max)
+    number('headroom', headroom, gt=0, le=1)
     if vbat_max <= 0 or adc_max <= 0:
         raise ValueError("voltages must be positive")
     if vbat_max <= adc_max:
@@ -44,6 +52,8 @@ def adc_divider(vbat_max: float, adc_max: float, series: str = "E24",
                             drain_ua=vbat_max / (r1 + r2) * 1e6,
                             source_ohms=r1 * r2 / (r1 + r2)))
     # bucket error to 0.5 % steps, then prefer the lowest drain
+    if not out:
+        raise DomainError("no standard resistor pair in that range keeps the ADC input low enough")
     out.sort(key=lambda d: (round(abs(d["error_pct"]) / 0.5), d["drain_ua"]))
     return out[:top]
 
@@ -53,6 +63,10 @@ def adc_divider(vbat_max: float, adc_max: float, series: str = "E24",
 def trace_width(current_a: float, rise_c: float = 10.0, copper_oz: float = 1.0,
                 external: bool = True, length_mm: float | None = None) -> dict:
     """IPC-2221 trace width for a given current and allowed temperature rise."""
+    number('current', current_a)
+    number('temperature rise', rise_c)
+    number('copper weight', copper_oz)
+    non_negative('length', length_mm, allow_none=True)
     if current_a <= 0 or rise_c <= 0 or copper_oz <= 0:
         raise ValueError("current, temperature rise and copper weight must be positive")
     k = 0.048 if external else 0.024
@@ -74,6 +88,12 @@ def trace_width(current_a: float, rise_c: float = 10.0, copper_oz: float = 1.0,
 def buck_inductor(vin: float, vout: float, iout: float, fsw: float,
                   ripple_ratio: float = 0.3, vripple: float = 0.05) -> dict:
     """Inductor and output-cap estimate for a buck converter (continuous mode)."""
+    number('Vin', vin)
+    number('Vout', vout)
+    number('output current', iout)
+    number('frequency', fsw)
+    number('ripple ratio', ripple_ratio)
+    positive('output ripple', vripple)
     if not 0 < vout < vin:
         raise ValueError("a buck converter needs 0 < Vout < Vin")
     if min(iout, fsw, ripple_ratio) <= 0:
@@ -89,6 +109,13 @@ def buck_inductor(vin: float, vout: float, iout: float, fsw: float,
 def boost_inductor(vin: float, vout: float, iout: float, fsw: float, efficiency: float = 0.85,
                    ripple_ratio: float = 0.3, vripple: float = 0.05) -> dict:
     """Inductor and output-cap estimate for a boost converter (continuous mode)."""
+    number('Vin', vin)
+    number('Vout', vout)
+    number('output current', iout)
+    number('frequency', fsw)
+    number('efficiency', efficiency)
+    number('ripple ratio', ripple_ratio)
+    positive('output ripple', vripple)
     if not 0 < vin < vout:
         raise ValueError("a boost converter needs 0 < Vin < Vout")
     if min(iout, fsw, ripple_ratio) <= 0 or not 0 < efficiency <= 1:
@@ -114,6 +141,8 @@ I2C_MODES = {
 
 def i2c_pullup(vcc: float, bus_cap_pf: float, mode: str = "Standard (100 kHz)") -> dict:
     """Allowed pull-up range per the I2C spec and a sensible E24 pick."""
+    number('Vcc', vcc)
+    number('bus capacitance', bus_cap_pf)
     if vcc <= 0.4 or bus_cap_pf <= 0:
         raise ValueError("need Vcc > 0.4 V and a positive bus capacitance")
     m = I2C_MODES[mode]
@@ -137,6 +166,11 @@ def i2c_pullup(vcc: float, bus_cap_pf: float, mode: str = "Standard (100 kHz)") 
 def base_resistor(ic_a: float, v_drive: float, vbe: float = 0.7, forced_beta: float = 10.0,
                   gpio_limit_ma: float = 20.0) -> dict:
     """Base resistor to saturate a BJT switch (forced beta, rounded down to E24)."""
+    number('collector current', ic_a)
+    number('drive voltage', v_drive)
+    non_negative('Vbe', vbe)
+    number('forced beta', forced_beta)
+    positive('GPIO limit', gpio_limit_ma)
     if ic_a <= 0 or forced_beta <= 0:
         raise ValueError("collector current and forced beta must be positive")
     if v_drive <= vbe:
@@ -158,6 +192,9 @@ LN2 = math.log(2)
 
 def ne555_astable(r1: float, r2: float, c: float, diode: bool = False) -> dict:
     """Classic 555 astable. With a diode across R2, C charges through R1 only (duty can go < 50 %)."""
+    number('R1', r1)
+    number('R2', r2)
+    number('C', c)
     if min(r1, r2, c) <= 0:
         raise ValueError("R1, R2 and C must be positive")
     t_high = LN2 * (r1 if diode else r1 + r2) * c
@@ -173,12 +210,14 @@ def ne555_astable_design(freq_hz: float, duty: float = 0.5, r_min: float = 1e3, 
     Duty below 50 % (or exactly 50 %) needs the diode-across-R2 variant; the result says which.
     R1 is kept >= 1 kΩ so the discharge transistor isn't shorted to Vcc.
     """
+    number('frequency', freq_hz)
+    number('duty', duty)
+    positive('R min', r_min)
+    positive('R max', r_max)
+    _series(series)
     if freq_hz <= 0 or not 0 < duty < 1:
         raise ValueError("frequency must be positive and duty between 0 and 1")
     diode = duty <= 0.5
-    table = SERIES[series]
-    res = sorted({float(f"{b * 10 ** e:.6g}") for e in range(2, 7) for b in table
-                  if r_min <= b * 10 ** e <= r_max})
     caps = [float(f"{b * 10 ** e:.6g}") for e in range(-12, -3) for b in CAP_E6]
     out = []
     period = 1 / freq_hz
@@ -203,6 +242,8 @@ def ne555_astable_design(freq_hz: float, duty: float = 0.5, r_min: float = 1e3, 
 
 def ne555_monostable(r: float, c: float) -> float:
     """Pulse width of a 555 one-shot: 1.1·R·C (= ln 3 · RC)."""
+    number('R', r)
+    number('C', c)
     if r <= 0 or c <= 0:
         raise ValueError("R and C must be positive")
     return math.log(3) * r * c
@@ -215,6 +256,8 @@ def opamp_gain(rf: float, rg: float, inverting: bool = False) -> dict:
     Non-inverting: G = 1 + Rf/Rg.  Inverting: G = -Rf/Rin (Rg is the input resistor).
     Noise gain (what sets bandwidth) is 1 + Rf/Rg in both cases.
     """
+    number('Rf', rf)
+    number('Rg', rg)
     if rf <= 0 or rg <= 0:
         raise ValueError("resistors must be positive")
     noise_gain = 1 + rf / rg
@@ -224,6 +267,10 @@ def opamp_gain(rf: float, rg: float, inverting: bool = False) -> dict:
 def opamp_design(gain: float, inverting: bool = False, series: str = "E24",
                  rg_min: float = 1e3, rg_max: float = 100e3) -> list[dict]:
     """Rf/Rg pairs from an E-series that hit a target gain, best first."""
+    number('gain', gain)
+    _series(series)
+    positive('Rg min', rg_min)
+    positive('Rg max', rg_max)
     if inverting:
         g = abs(gain)
         if g <= 0:
@@ -251,6 +298,16 @@ def opamp_check(gain: float, noise_gain: float, vin_pk: float, v_neg: float, v_p
                 headroom_v: float = 1.5, gbw_hz: float | None = None, slew_v_per_us: float | None = None,
                 freq_hz: float | None = None) -> list[tuple[str, str]]:
     """Output swing, bandwidth and slew checks for a gain stage."""
+    number('gain', gain)
+    positive('noise gain', noise_gain)
+    number('input', vin_pk)
+    number('V-', v_neg)
+    number('V+', v_pos)
+    non_negative('headroom', headroom_v)
+    positive('GBW', gbw_hz, allow_none=True)
+    positive('slew rate', slew_v_per_us, allow_none=True)
+    positive('signal frequency', freq_hz, allow_none=True)
+    _rails(v_neg, v_pos)
     msgs: list[tuple[str, str]] = []
     v_out = gain * vin_pk
     lo, hi = v_neg + headroom_v, v_pos - headroom_v
@@ -306,6 +363,14 @@ def led_budget(count: int, ma_per_ch: float, channels: int = 3, brightness: floa
 
     mix: fraction of full-white drive (1 = all channels at 100 %); None = one channel only.
     """
+    integer('LED count', count, ge=1, le=10_000_000)
+    number('channel current', ma_per_ch)
+    integer('channels', channels, ge=1, le=8)
+    number('brightness', brightness)
+    number('mix', mix, gt=0, le=1, allow_none=True)
+    non_negative('idle current', idle_ma)
+    positive('voltage', volts)
+    number('PSU margin', psu_margin, ge=1)
     if count <= 0 or ma_per_ch <= 0 or channels <= 0:
         raise ValueError("count, channel current and channels must be positive")
     if not 0 <= brightness <= 1:
@@ -322,6 +387,12 @@ def led_budget(count: int, ma_per_ch: float, channels: int = 3, brightness: floa
 def led_max_brightness(count: int, ma_per_ch: float, psu_ma: float, channels: int = 3,
                        idle_ma: float = 1.0, mix: float | None = 1.0) -> float:
     """Highest global brightness (0..1) that keeps the drawn current within psu_ma."""
+    integer('LED count', count, ge=1, le=10_000_000)
+    positive('channel current', ma_per_ch)
+    number('supply current', psu_ma)
+    integer('channels', channels, ge=1, le=8)
+    non_negative('idle current', idle_ma)
+    number('mix', mix, gt=0, le=1, allow_none=True)
     if count <= 0 or psu_ma <= 0:
         raise ValueError("count and supply current must be positive")
     usable = psu_ma - count * idle_ma
@@ -329,3 +400,14 @@ def led_max_brightness(count: int, ma_per_ch: float, psu_ma: float, channels: in
         return 0.0
     per_led = ma_per_ch if mix is None else ma_per_ch * channels * mix
     return min(usable / (count * per_led), 1.0)
+
+
+
+def _series(name) -> None:
+    if name not in SERIES:
+        raise DomainError(f"unknown E-series {name!r}")
+
+
+def _rails(v_neg, v_pos) -> None:
+    if v_pos <= v_neg:
+        raise DomainError("V+ must be above V−")

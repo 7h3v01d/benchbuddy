@@ -9,12 +9,13 @@ description = "Desktop bench companion for Arduino / ESP32 / general electronics
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "benchbuddy/gui/fonts/OFL.txt"]
 authors = [{ name = "Leon Priest" }]
 dependencies = ["PyQt6>=6.5", "pyserial>=3.5"]
 
 [project.optional-dependencies]
-ocr = ["pytesseract", "pillow"]
-dev = ["pytest>=7", "pillow", "pyinstaller>=6"]
+ocr = ["pytesseract>=0.3.10", "pillow>=10"]
+dev = ["pytest>=7", "hypothesis>=6.100", "pillow>=10", "pytesseract>=0.3.10", "pyinstaller>=6"]
 
 [project.gui-scripts]
 benchbuddy = "benchbuddy.__main__:main"

@@ -65,7 +65,6 @@ class PlotWidget(QWidget):
     def paintEvent(self, _e) -> None:  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        pal = self.palette()
         p.fillRect(self.rect(), QColor(theme.OBSIDIAN))
         text = QColor(theme.MUTED)
         grid = QColor(theme.BORDER)
@@ -100,7 +99,7 @@ class PlotWidget(QWidget):
         self._legend_bg(p, top_rect, ("Vout", "Vin (regulator input)", "Brown-out threshold"))
         self._legend_bg(p, bot_rect, ("Load current", "Current from source"))
         x = top_rect.left() + 8
-        for label, col in (("Vout", C_VOUT), ("Vin (regulator input)", C_VIN), (f"Brown-out threshold", C_THRESH)):
+        for label, col in (("Vout", C_VOUT), ("Vin (regulator input)", C_VIN), ("Brown-out threshold", C_THRESH)):
             p.setPen(QPen(QColor(col), 3))
             p.drawLine(QPointF(x, top_rect.top() + 12), QPointF(x + 16, top_rect.top() + 12))
             p.setPen(text)

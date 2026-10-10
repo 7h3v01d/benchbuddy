@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QBrush, QColor, QPainter, QPen
-from PyQt6.QtWidgets import (QFormLayout, QGroupBox, QLabel, QLineEdit, QSizePolicy,
+import functools
+import html
+
+from PyQt6.QtCore import QRectF, QUrl
+from PyQt6.QtGui import QBrush, QColor, QDesktopServices, QPainter, QPen
+from PyQt6.QtWidgets import (QFormLayout, QGroupBox, QLineEdit, QSizePolicy,
                              QTextBrowser, QVBoxLayout, QWidget)
 
 from ..core.resistors import COLOR_HEX
@@ -46,7 +49,11 @@ class ResultView(QTextBrowser):
 
     def __init__(self, min_height: int = 90, parent=None):
         super().__init__(parent)
-        self.setOpenExternalLinks(True)
+        # Links are handled here, not by Qt: only plain web links ever leave the app, so text that
+        # came from an imported file can't launch file:, custom-protocol or other handlers.
+        self.setOpenLinks(False)
+        self.setOpenExternalLinks(False)
+        self.anchorClicked.connect(open_web_link)
         self.setMinimumHeight(min_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.document().setDefaultStyleSheet(theme.DOC_CSS)
@@ -55,7 +62,33 @@ class ResultView(QTextBrowser):
         self.setHtml(f"<div>{html}</div>")
 
     def show_error(self, text: str) -> None:
-        self.show_html(f"<span style='color:{STATUS_COLORS['error']}'>{STATUS_ICONS['error']} {text}</span>")
+        """Plain text in, always escaped: error messages often quote names the user typed."""
+        self.show_html(f"<span style='color:{STATUS_COLORS['error']}'>{STATUS_ICONS['error']} "
+                       f"{html.escape(str(text))}</span>")
+
+
+def open_web_link(url: QUrl) -> bool:
+    """Open http(s) links in the browser; refuse every other scheme. Returns whether it opened."""
+    if url.scheme().lower() in ("http", "https") and url.host():
+        return QDesktopServices.openUrl(url)
+    return False
+
+
+def guarded(view_attr: str):
+    """Decorate a no-argument recalc slot: any domain or arithmetic failure is shown in the
+    page's result box instead of escaping into Qt (where it would be lost or crash the app)."""
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *_signal_args):
+            try:
+                return fn(self)
+            except ValueError as exc:            # DomainError & friends: a clear reason
+                getattr(self, view_attr).show_error(str(exc))
+            except (ArithmeticError, IndexError):
+                getattr(self, view_attr).show_error(
+                    "Those values are outside what this calculator can handle (too large, too small or zero).")
+        return wrapper
+    return deco
 
 
 def status_html(level: str, text: str) -> str:

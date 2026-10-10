@@ -14,7 +14,8 @@ a = Analysis(
     [str(ROOT / "benchbuddy" / "__main__.py")],
     pathex=[str(ROOT)],
     datas=datas,
-    hiddenimports=["PyQt6.QtSvg", "serial.tools.list_ports"],   # SVG icons; serial port scan
+    hiddenimports=["PyQt6.QtSvg", "serial.tools.list_ports",     # SVG icons; serial port scan
+                   "pytesseract", "PIL.Image"],                 # photo OCR (Tesseract itself stays external)
     excludes=["tkinter", "pytest", "PyQt6.QtWebEngineCore", "PyQt6.QtWebEngineWidgets",
               "PyQt6.QtQml", "PyQt6.QtQuick", "PyQt6.QtMultimedia", "PyQt6.Qt3DCore"],
     noarchive=False,

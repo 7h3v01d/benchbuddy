@@ -17,10 +17,19 @@ Or install it as a package (adds a `benchbuddy` launcher):
 pip install .
 ```
 
-Run the tests (the GUI tests run headless):
+Run the tests (install `requirements-dev.txt` first; the GUI tests run headless):
 
 ```bash
 QT_QPA_PLATFORM=offscreen python -m pytest tests -q
+```
+
+The core tests need no Qt at all: on a machine without PyQt6 the GUI tests skip and the rest
+(engines, meter, firmware host tests, adversarial suites) still run. The property-based suites use
+[hypothesis](https://hypothesis.readthedocs.io); for a much deeper search:
+
+```bash
+python -m pytest tests --hypothesis-profile=deep          # 3,000 cases per property
+BB_SIM_EXAMPLES=400 python -m pytest tests/test_adversarial_brownout.py
 ```
 
 ### Current meter (optional hardware)
@@ -31,9 +40,12 @@ Wiring, ranges and limits: [`firmware/README.md`](firmware/README.md).
 
 ### Windows build (standalone .exe)
 
-Run `setup.bat` once, then `build.bat`. It renders the icon (`tools/make_icon.py`) and runs
-PyInstaller with `benchbuddy.spec`; the result is `dist\BenchBuddy\BenchBuddy.exe` (one folder, no
-Python needed on the target PC; fonts and icons are bundled).
+Run `setup.bat` once, then `build.bat`. It installs the exact versions in
+`constraints-release.txt` (checked to resolve for Windows x64 / Python 3.11), runs the tests, renders
+the icon (`tools/make_icon.py`) and runs PyInstaller with `benchbuddy.spec`. The result is
+`dist\BenchBuddy\BenchBuddy.exe`: one folder, no Python needed on the target PC, fonts, icons and the
+photo-OCR Python side bundled. Photo OCR still needs the free Tesseract program installed (the
+UB-Mannheim installer's default folder is found automatically, or set `BENCHBUDDY_TESSERACT`).
 
 ## What's inside
 
@@ -66,15 +78,37 @@ Results are candidates to confirm, not answers. SMD markings also vary by manufa
 
 The brown-out sim is a simplified model (regulator = first-order lag, optional current limit). It does not model
 real control-loop stability or ringing. Use it to compare options and size capacitors, then verify with a scope.
+Its integrator is implicit (backward Euler / exact exponential updates), so it stays stable for any capacitor
+or ESR, and rail voltages never go below 0 V. Expect ~0.5 % discretisation error on the size of a dip.
 
 ## How the power budget thinks
 
-- **Average** current drives battery runtime and LDO heat. **Peak** current drives brown-out checks.
+- **Average** current drives battery runtime and regulator heat. **Peak** current drives brown-out checks.
 - Peaks of all loads are assumed to happen **at the same time**. This is deliberately conservative.
-- A rail passes if its average is within its rating, peaks only briefly exceed it, and the
-  voltage at the source (after sag from `R int`) still clears every regulator's dropout.
+- Loads are modelled as **constant-current**. Only supplies have series resistance (`R int`), so for
+  each supply the engine solves `V = Vnom − R·I(V)` exactly (bracketed bisection, always converges),
+  where `I(V)` is the real draw of everything below it at that voltage:
+  - **LDO**: output `min(Vset, Vin − dropout)`; passes its output current plus Iq.
+  - **Buck**: same voltage rule; draws `Vset·Iout / (η·Vin)` while regulating, rising to `Iout`
+    (pass-through at 100 % duty) as it falls into dropout.
+  - **Boost**: draws `Vout·Iout / (η·Vin)` above its minimum input and nothing below it. If switching on
+    pulls its own input under that minimum, there is no steady state and it's reported as
+    **hiccuping**, with the source's maximum deliverable power (`V²/4R`) for comparison.
+- Every rail is judged on the voltage it *actually* receives, so a regulator in dropout drags
+  everything downstream with it and each affected rail reports its own error.
 - Warnings use thresholds: 80 % of rating, 5 % / 10 % sag, 50 / 90 °C LDO rise.
 - All preset currents are **typical** values. Clones and dev boards vary; confirm with a datasheet or meter.
+
+## What it refuses
+
+Engines check their own inputs and raise one error family (`DomainError`, a `ValueError`) instead of
+computing nonsense: non-finite numbers, negative currents/quantities, zero or negative voltages,
+efficiencies outside (0, 1], impossible battery cut-offs, NaN or unknown fields in saved files, NaN
+in capture CSVs, reversed-shunt measured profiles. A saved project with *impossible* values still
+opens (so you can fix it) but won't be analysed until it's valid. Every calculator page shows these
+as a message, never a crash. Imported text (parts CSV) is always shown as text, links only open if
+they're `http(s)`, exported CSV cells can't start a spreadsheet formula, and photos are checked by
+content, size (25 MB) and pixel count (40 MP) before anything decodes them.
 
 ## Look & feel
 
@@ -87,12 +121,17 @@ and it applies everywhere, including the brown-out plot and the status banner.
 JetBrains Mono NL is bundled in `benchbuddy/gui/fonts/` under the SIL Open Font License (`OFL.txt`),
 so it works without installing the font. Arrow/check icons are small SVGs in `benchbuddy/gui/icons/`.
 
+## Licence
+
+Apache License 2.0, © 2026 Leon Priest: see `LICENSE` and `NOTICE`. The bundled JetBrains Mono NL font
+is under the SIL Open Font License (`benchbuddy/gui/fonts/OFL.txt`).
+
 ## Layout
 
 ```
-benchbuddy/core/   units, resistors, capacitors, power, brownout, calcs, presets, pinout, report, meter, partsdb, seed_parts, seed_extra, identify, ocr
+benchbuddy/core/   validation, units, resistors, capacitors, power, brownout, calcs, presets, examples, pinout, report, meter, images, partsdb, seed_parts, seed_extra, identify, ocr
 benchbuddy/gui/    one module per tab + main_window, theme (+ fonts/, icons/)
-tests/             core maths + headless GUI smoke tests
+tests/             core maths, headless GUI smoke tests, adversarial / property suites (test_adversarial_*)
 tools/            make_icon.py (SVG → .ico for the Windows build)
 firmware/         ESP32 meter sketch + wiring guide; host_test/ runs the sketch on a PC for tests
 ```
