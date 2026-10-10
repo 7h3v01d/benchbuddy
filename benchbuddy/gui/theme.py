@@ -219,6 +219,18 @@ QSlider::handle:horizontal {{ background: {TEAL}; width: 10px; margin: -6px 0; }
 QMainWindow, QDialog, QMessageBox {{ background: {OBSIDIAN}; }}
 QMessageBox QLabel {{ color: {TEXT}; }}
 
+/* ---------- header strip ---------- */
+QWidget#header {{ background: {PANEL}; border-bottom: 1px solid {BORDER}; }}
+QLabel#wordmark {{ color: {TEAL}; font-weight: 700; letter-spacing: 3px; }}
+QPushButton#headerStatus {{
+    background: transparent; border: 1px solid {BORDER_HI}; padding: 3px 10px;
+    font-weight: 600; letter-spacing: 1px; min-height: 0;
+}}
+QPushButton#headerStatus[level="ok"]    {{ color: {PHOSPHOR}; border-color: {tint(PHOSPHOR, 120)}; }}
+QPushButton#headerStatus[level="warn"]  {{ color: {AMBER};    border-color: {tint(AMBER, 140)}; }}
+QPushButton#headerStatus[level="error"] {{ color: {RED};      border-color: {tint(RED, 160)}; background: {tint(RED, 22)}; }}
+QPushButton#headerStatus:hover {{ border-color: {TEAL}; }}
+
 /* ---------- status banner (power tab) ---------- */
 QLabel#banner {{ font-weight: 700; padding: 4px 12px; letter-spacing: 1px; border: 1px solid {BORDER_HI}; }}
 QLabel#banner[level="ok"]    {{ color: {PHOSPHOR}; border-color: {PHOSPHOR}; background: {tint(PHOSPHOR, 22)}; }}

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "benchbuddy"
+dynamic = ["version"]
+description = "Desktop bench companion for Arduino / ESP32 / general electronics: power budgets, brown-out sim, calculators, pinouts and a parts library."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+authors = [{ name = "Leon Priest" }]
+dependencies = ["PyQt6>=6.5"]
+
+[project.optional-dependencies]
+ocr = ["pytesseract", "pillow"]
+dev = ["pytest>=7", "pillow", "pyinstaller>=6"]
+
+[project.gui-scripts]
+benchbuddy = "benchbuddy.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "benchbuddy.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["benchbuddy*"]
+
+[tool.setuptools.package-data]
+"benchbuddy.gui" = ["fonts/*.ttf", "fonts/OFL.txt", "icons/*.svg", "icons/*.ico", "icons/*.png"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

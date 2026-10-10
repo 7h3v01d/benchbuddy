@@ -62,7 +62,9 @@ def decode_cap_code(code: str) -> CapDecode:
     if c.isdigit():
         if len(c) == 3:
             base, exp = int(c[:2]), int(c[2])
-            return CapDecode(base * 10 ** exp * 1e-12, tol, "3-digit code, picofarads")
+            # EIA: a third digit of 8 or 9 means x0.01 / x0.1 (109 = 1.0 pF, 479 = 4.7 pF)
+            factor = {8: 0.01, 9: 0.1}.get(exp, 10 ** exp)
+            return CapDecode(float(f"{base * factor * 1e-12:.6g}"), tol, "3-digit code, picofarads")
         if len(c) <= 2:
             return CapDecode(int(c) * 1e-12, tol, "1-2 digits are picofarads")
         if len(c) == 4:

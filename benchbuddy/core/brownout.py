@@ -285,4 +285,4 @@ def from_power_rail(project, rail_name: str) -> SimParams:
     if rail.kind == "ldo":
         return replace(base_p, reg_kind="ldo", dropout_v=rail.dropout_v)
     return replace(base_p, reg_kind="switcher", efficiency=rail.efficiency,
-                   vin_min=rail.min_vin if rail.kind == "boost" else rail.v_out + 0.5)
+                   vin_min=rail.min_vin if rail.kind == "boost" else rail.v_out + rail.dropout_v)

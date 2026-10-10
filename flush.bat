@@ -10,7 +10,7 @@ for %%D in (
     .ruff_cache
     .pytype
     .hypothesis
-	parallax_intent.egg-info
+    benchbuddy.egg-info
 ) do (
     for /d /r %%F in (%%D) do (
         if exist "%%F" (

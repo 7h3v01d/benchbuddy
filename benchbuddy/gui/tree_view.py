@@ -10,7 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen
+from PyQt6.QtCore import QBuffer, QIODevice
+from PyQt6.QtGui import QColor, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QSizePolicy, QToolTip, QWidget
 
 from ..core import power
@@ -86,6 +87,28 @@ def build_nodes(project: power.Project, report: power.PowerReport) -> list[Node]
     for n in nodes.values():
         n.children.sort(key=lambda c: not c.is_rail)
     return roots
+
+
+def render_tree_image(project: power.Project, report: power.PowerReport, scale: float = 2.0) -> QImage:
+    """Draw the power tree off-screen at full size (for reports)."""
+    view = PowerTreeView()
+    view.set_data(project, report)
+    size = view.sizeHint()
+    view.resize(size)
+    img = QImage(int(size.width() * scale), int(size.height() * scale), QImage.Format.Format_ARGB32)
+    img.setDevicePixelRatio(scale)
+    img.fill(QColor(theme.OBSIDIAN))
+    p = QPainter(img)
+    view.render(p)
+    p.end()
+    return img
+
+
+def image_png_bytes(img: QImage) -> bytes:
+    buf = QBuffer()
+    buf.open(QIODevice.OpenModeFlag.WriteOnly)
+    img.save(buf, "PNG")
+    return bytes(buf.data())
 
 
 def theme_icon(level: str) -> str:

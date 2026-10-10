@@ -234,8 +234,10 @@ def analyse(project: Project, usable_capacity: float = 0.8,
         if rail.kind == "ldo":
             rep.in_avg_ma = avg + rail.iq_ma
             rep.in_peak_ma = peak + rail.iq_ma
-            rep.dissipation_avg_w = (p_nom - rail.v_out) * avg / 1000 + p_nom * rail.iq_ma / 1000
-            rep.dissipation_peak_w = (p_nom - rail.v_out) * peak / 1000 + p_nom * rail.iq_ma / 1000
+            # an LDO in dropout passes Vin straight through: the headroom it burns can't go negative
+            headroom = max(p_nom - rail.v_out, 0.0)
+            rep.dissipation_avg_w = headroom * avg / 1000 + p_nom * rail.iq_ma / 1000
+            rep.dissipation_peak_w = headroom * peak / 1000 + p_nom * rail.iq_ma / 1000
             if rail.theta_ja:
                 rep.temp_rise_avg_c = rep.dissipation_avg_w * rail.theta_ja
                 rep.temp_rise_peak_c = rep.dissipation_peak_w * rail.theta_ja

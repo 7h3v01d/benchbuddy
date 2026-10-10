@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <!-- BenchBuddy: a scope trace riding through a brown-out dip -->
+  <rect x="0" y="0" width="64" height="64" fill="#0b0f14"/>
+  <rect x="2" y="2" width="60" height="60" fill="#11161d" stroke="#2c3a46" stroke-width="2"/>
+  <path d="M8 44 H56" stroke="#ff6b6b" stroke-width="2" stroke-dasharray="4 3"/>
+  <path d="M8 24 H22 L27 38 H35 L40 24 H56" fill="none" stroke="#2fd6c3" stroke-width="5"
+        stroke-linejoin="miter" stroke-linecap="square"/>
+  <rect x="50" y="8" width="6" height="6" fill="#4be08a"/>
+</svg>

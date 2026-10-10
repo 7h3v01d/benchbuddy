@@ -685,3 +685,108 @@ def test_pin_suggest_orders_clean_pins_first():
     assert best and best[0].severity == "ok"
     assert all(p.severity != "avoid" for p in best)
     assert all(p.severity == "ok" for p in pinout.suggest(b, ["out"], include_caution=False))
+
+
+# ----------------------------------------------------- regression: maths review
+def test_parse_rkm_ohms_with_r_at_either_end():
+    from benchbuddy.core.units import format_rkm, parse_value
+    assert parse_value("220R") == 220
+    assert parse_value("R47") == 0.47
+    assert parse_value("0R") == 0
+    assert parse_value("1.5R") == 1.5
+    for v in (0.47, 4.7, 220, 4700, 1e6, 1.5e6):     # format_rkm output must parse back
+        assert parse_value(format_rkm(v)) == v
+    assert parse_value("10uF") == 1e-05             # no float noise from prefix scaling
+
+
+def test_cap_code_eia_8_and_9_multipliers():
+    from benchbuddy.core.capacitors import decode_cap_code
+    assert decode_cap_code("109").farads == 1e-12
+    assert decode_cap_code("479").farads == 4.7e-12
+    assert decode_cap_code("228").farads == 0.22e-12
+    assert decode_cap_code("104").farads == 1e-07
+
+
+def test_ldo_in_dropout_has_no_negative_heat():
+    from benchbuddy.core import power
+    p = power.Project([power.Rail("U", 3.0, "supply", max_ma=500),
+                       power.Rail("L", 3.3, "ldo", parent="U", max_ma=500, dropout_v=0.3)],
+                      [power.Load("x", "L", 1, 100, 100)])
+    rep = power.analyse(p)
+    r = rep.by_name("L")
+    assert r.dissipation_avg_w >= 0 and r.temp_rise_avg_c >= 0
+    assert rep.by_name("U").status == "error"        # and the dropout itself is still flagged
+
+
+def test_sim_buck_headroom_follows_rail_dropout():
+    from benchbuddy.core import brownout, power
+    p = power.Project([power.Rail("B", 12.0, "supply", max_ma=2000),
+                       power.Rail("5V", 5.0, "buck", parent="B", max_ma=2000, dropout_v=0.8)],
+                      [power.Load("x", "5V", 1, 200, 400)])
+    assert brownout.from_power_rail(p, "5V").vin_min == 5.8
+
+
+def test_report_html_contains_everything():
+    from benchbuddy.core import power, report
+    proj = power.Project([power.Rail("USB", 5.0, "supply", max_ma=500, r_internal_ohm=0.3),
+                          power.Rail("3V3", 3.3, "ldo", parent="USB", max_ma=800, dropout_v=1.1)],
+                         [power.Load("ESP <32>", "3V3", 1, 80, 500, 5)])
+    rep = power.analyse(proj)
+    html = report.render_html(proj, rep, title="Bench & test", diagram_png=b"\x89PNG fake")
+    assert "Bench &amp; test" in html and "ESP &lt;32&gt;" in html       # escaped
+    assert "data:image/png;base64," in html
+    assert "Works, but check the warnings" in html
+    s = report.summary(proj, rep)
+    assert s["peak_ma"] == rep.by_name("USB").peak_ma and s["warnings"] >= 1
+    plain = report.render_html(proj, rep, print_mode=True)
+    assert "grid-template" not in plain and "<table class='stats'>" in plain
+
+
+# ------------------------------------------------------------- new calculators
+def test_555_astable_matches_textbook():
+    from benchbuddy.core import calcs
+    r = calcs.ne555_astable(1e3, 10e3, 100e-9)          # f = 1.44 / ((R1 + 2 R2) C)
+    assert abs(r["freq_hz"] - 1.4427 / (21e3 * 100e-9)) / r["freq_hz"] < 1e-3
+    assert abs(r["duty"] - 11 / 21) < 1e-9
+    d = calcs.ne555_astable(10e3, 10e3, 1e-6, diode=True)
+    assert abs(d["duty"] - 0.5) < 1e-9
+    assert abs(calcs.ne555_monostable(100e3, 10e-6) - 1.0986) < 1e-3      # ≈ 1.1 RC
+
+
+def test_555_design_hits_target():
+    from benchbuddy.core import calcs
+    for f, duty in ((1000, 0.6), (1, 0.5), (38000, 0.3)):
+        best = calcs.ne555_astable_design(f, duty)[0]
+        assert abs(best["freq_err_pct"]) < 5 and abs(best["duty_err"]) < 0.05
+        assert best["r1"] >= 1e3
+        assert best["diode"] == (duty <= 0.5)
+        chk = calcs.ne555_astable(best["r1"], best["r2"], best["c"], best["diode"])
+        assert abs(chk["freq_hz"] - best["freq_hz"]) < 1e-9
+
+
+def test_opamp_gain_design_and_checks():
+    from benchbuddy.core import calcs
+    assert calcs.opamp_gain(10e3, 1e3)["gain"] == 11
+    assert calcs.opamp_gain(10e3, 1e3, inverting=True)["gain"] == -10
+    best = calcs.opamp_design(11)[0]
+    assert abs(best["err_pct"]) < 0.01
+    inv = calcs.opamp_design(-4.7, inverting=True)[0]
+    assert abs(inv["gain"] + 4.7) / 4.7 < 0.01
+    assert calcs.opamp_design(1)[0]["rf"] == 0
+    msgs = calcs.opamp_check(11, 11, 0.5, 0, 5, headroom_v=1.5)
+    assert msgs[0][0] == "error"                         # 5.5 V out of a 0-5 V supply clips
+    msgs = calcs.opamp_check(2, 2, 0.5, -12, 12, gbw_hz=1e6, slew_v_per_us=0.5, freq_hz=100e3)
+    levels = [m[0] for m in msgs]
+    assert levels[0] == "ok" and "error" in levels[1:]   # 1 V at 100 kHz needs 0.63 V/µs > 0.5
+
+
+def test_led_budget_numbers():
+    from benchbuddy.core import calcs
+    r = calcs.led_budget(60, 20, brightness=1.0, mix=1.0, idle_ma=1.0)
+    assert r["total_ma"] == 60 * 61 and abs(r["power_w"] - 18.3) < 1e-9
+    assert abs(r["psu_a"] - 3.66 * 1.25) < 1e-9
+    one = calcs.led_budget(10, 20, mix=None, idle_ma=0)
+    assert one["total_ma"] == 200
+    b = calcs.led_max_brightness(60, 20, 2000, idle_ma=1.0)
+    assert abs(b - (2000 - 60) / (60 * 60)) < 1e-9
+    assert calcs.led_max_brightness(100, 20, 50) == 0.0

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QSettings
-from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import QMainWindow, QMessageBox, QTabWidget
+from PyQt6.QtCore import QSettings, Qt
+from PyQt6.QtGui import QAction, QIcon, QKeySequence
+from PyQt6.QtWidgets import (QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QTabWidget,
+                             QVBoxLayout, QWidget)
 
 from .. import __version__
 from ..core.partsdb import PartsDB
@@ -15,8 +16,40 @@ from .pinout_tab import PinoutTab
 from .power_tab import PowerTab
 from .resistor_tab import ResistorTab
 from .sim_tab import SimTab
+from . import theme
 from .theme import apply_theme  # noqa: F401  (re-exported for __main__)
 from .tools_tab import BatteryTab, ToolsTab
+
+
+APP_ICON = theme.ICON_DIR / "app.svg"
+
+
+class HeaderBar(QWidget):
+    """Slim strip above the tabs: wordmark on the left, live power-budget verdict on the right."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("header")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(12, 6, 8, 6)
+        mark = QLabel("BENCHBUDDY")
+        mark.setObjectName("wordmark")
+        ver = QLabel(f"v{__version__}")
+        ver.setProperty("role", "muted")
+        lay.addWidget(mark)
+        lay.addWidget(ver)
+        lay.addStretch(1)
+        self.status = QPushButton()
+        self.status.setObjectName("headerStatus")
+        self.status.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.status.setToolTip("Power budget verdict: click to open the Power budget tab")
+        lay.addWidget(self.status)
+
+    def set_status(self, level: str, text: str) -> None:
+        icon = {"ok": "✔", "warn": "⚠", "error": "✖"}.get(level, "")
+        self.status.setText(f"POWER  {icon} {text}")
+        self.status.setProperty("level", level)
+        theme.repolish(self.status)
 
 
 class MainWindow(QMainWindow):
@@ -42,7 +75,19 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(BatteryTab(), "BATTERY && SLEEP")
         self.parts_tab = PartsTab(self.db)
         self.tabs.addTab(self.parts_tab, "PARTS LOOKUP")
-        self.setCentralWidget(self.tabs)
+        self.header = HeaderBar()
+        self.header.status.clicked.connect(lambda: self.tabs.setCurrentWidget(self.power_tab))
+        self.power_tab.statusChanged.connect(self.header.set_status)
+        self.power_tab.recalc()                     # replay the current verdict into the header
+        central = QWidget()
+        col = QVBoxLayout(central)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(0)
+        col.addWidget(self.header)
+        col.addWidget(self.tabs, 1)
+        self.setCentralWidget(central)
+        if APP_ICON.exists():
+            self.setWindowIcon(QIcon(str(APP_ICON)))
 
         view = self.menuBar().addMenu("&View")
         for i in range(self.tabs.count()):

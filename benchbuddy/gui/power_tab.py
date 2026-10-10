@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QBrush, QColor
+from pathlib import Path
+
+from PyQt6.QtCore import QMarginsF, QSizeF, Qt, QUrl, pyqtSignal
+from PyQt6.QtGui import QBrush, QColor, QImage, QPageLayout, QPageSize, QPdfWriter, QTextDocument
 from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
                              QLabel, QMessageBox, QPushButton, QSpinBox, QSplitter, QTableWidget,
                              QTableWidgetItem, QScrollArea, QTabWidget, QVBoxLayout, QWidget)
 
-from ..core import power
+from .. import __version__
+from ..core import power, report as report_mod
 from ..core.presets import (LOAD_PRESETS, REGULATOR_PRESETS, SOURCE_PRESETS, make_load,
                             make_rail)
 from ..core.units import parse_value
 from . import theme
-from .tree_view import PowerTreeView
+from .tree_view import PowerTreeView, image_png_bytes, render_tree_image
 from .widgets import STATUS_COLORS, STATUS_ICONS, ResultView, group, status_html
 
 RAIL_COLS = ["Name", "Type", "Parent", "Vout (V)", "Max (mA)", "Vmin (V)", "R int (Ω)",
@@ -53,21 +56,26 @@ def example_project() -> power.Project:
 
 
 class PowerTab(QWidget):
+    statusChanged = pyqtSignal(str, str)        # level, text: mirrors the banner for the window header
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.project = example_project()
+        self.project_path: str | None = None
+        self._last_report: power.PowerReport | None = None
         self._busy = False
 
         # ---------------------------------------------------------- toolbar
         bar = QHBoxLayout()
         for text, fn in (("New", self.on_new), ("Open…", self.on_open), ("Save…", self.on_save),
-                         ("Load example", self.on_example)):
+                         ("Load example", self.on_example), ("Export report…", self.on_export)):
             b = QPushButton(text)
             b.clicked.connect(fn)
             bar.addWidget(b)
         bar.addStretch(1)
         self.banner = QLabel()
         self.banner.setObjectName("banner")
+        self.banner.hide()          # the window header shows this verdict on every tab
         bar.addWidget(self.banner)
 
         # ------------------------------------------------------------ rails
@@ -501,6 +509,7 @@ class PowerTab(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "Save power budget", "power_budget.json", "JSON (*.json)")
         if path:
             self.project.save(path)
+            self.project_path = path
             self.status_message(f"Saved {path}")
 
     def on_open(self) -> None:
@@ -512,7 +521,73 @@ class PowerTab(QWidget):
         except Exception as exc:  # noqa: BLE001 - show any file problem to the user
             QMessageBox.warning(self, "Couldn't open", str(exc))
             return
+        self.project_path = path
         self.refresh_all()
+
+    # ----------------------------------------------------------------- report
+    def report_title(self) -> str:
+        return Path(self.project_path).stem.replace("_", " ") if self.project_path else "Power budget"
+
+    def on_export(self) -> None:
+        default = (Path(self.project_path).with_suffix(".html").name if self.project_path
+                   else "power_budget_report.html")
+        path, chosen = QFileDialog.getSaveFileName(
+            self, "Export power budget report", default, "HTML report (*.html);;PDF (*.pdf)")
+        if not path:
+            return
+        if "PDF" in chosen and not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        try:
+            self.export_report(path)
+        except (OSError, power.ProjectError) as exc:
+            QMessageBox.warning(self, "Couldn't export", str(exc))
+            return
+        self.status_message(f"Report written to {path}")
+
+    def export_report(self, path: str) -> None:
+        """Write the report as .html (dark, self-contained) or .pdf (light, print layout)."""
+        report = power.analyse(self.project)
+        img = render_tree_image(self.project, report) if report.rails else None
+        if path.lower().endswith(".pdf"):
+            self._export_pdf(path, report, img)
+            return
+        html = report_mod.render_html(
+            self.project, report, title=self.report_title(), app_version=__version__,
+            diagram_png=image_png_bytes(img) if img is not None else None,
+            diagram_width=int(img.width() / img.devicePixelRatio()) if img is not None else None,
+            palette=dict(obsidian=theme.OBSIDIAN, panel=theme.PANEL, border=theme.BORDER,
+                         border_hi=theme.BORDER_HI, teal=theme.TEAL, phosphor=theme.PHOSPHOR,
+                         amber=theme.AMBER, red=theme.RED, text=theme.TEXT, text_hi=theme.TEXT_HI,
+                         muted=theme.MUTED))
+        Path(path).write_text(html, encoding="utf-8")
+
+    def _export_pdf(self, path: str, report: power.PowerReport, img) -> None:
+        writer = QPdfWriter(path)
+        writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+        writer.setPageMargins(QMarginsF(14, 14, 14, 14), QPageLayout.Unit.Millimeter)
+        writer.setResolution(150)
+        writer.setTitle(f"{self.report_title()} · BenchBuddy report")
+        doc = QTextDocument()
+        doc.documentLayout().setPaintDevice(writer)    # measure fonts at the PDF's DPI, not the screen's
+        page_w = writer.width()                        # device pixels at 150 dpi
+        doc.setPageSize(QSizeF(page_w, writer.height()))
+        size_attr = None
+        if img is not None:
+            # Qt rich text scales images by (device dpi / 96) when laid out on the PDF device, so give
+            # it explicit CSS-pixel width/height that land at most one page wide.
+            css_per_dev = 96 / writer.resolution()
+            logical_w = img.width() / img.devicePixelRatio()
+            logical_h = img.height() / img.devicePixelRatio()
+            w_css = min(logical_w, page_w * 0.98 * css_per_dev)
+            size_attr = (int(w_css), int(logical_h * w_css / logical_w))
+            raw = QImage(img)
+            raw.setDevicePixelRatio(1.0)
+            doc.addResource(QTextDocument.ResourceType.ImageResource, QUrl("bb://diagram.png"), raw)
+        doc.setHtml(report_mod.render_html(
+            self.project, report, title=self.report_title(), app_version=__version__, print_mode=True,
+            diagram_size=size_attr,
+            diagram_src="bb://diagram.png" if img is not None else None))
+        doc.print(writer)
 
     # --------------------------------------------------------------- analysis
     def recalc(self) -> None:
@@ -528,6 +603,7 @@ class PowerTab(QWidget):
         self._show_report(report)
 
     def _set_banner(self, level: str, text: str) -> None:
+        self.statusChanged.emit(level, text)
         self.banner.setText(f"{STATUS_ICONS[level]} {text}")
         self.banner.setProperty("level", level)
         theme.repolish(self.banner)

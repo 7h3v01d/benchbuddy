@@ -41,13 +41,24 @@ def parse_value(text: str) -> float:
     if m:
         whole, letter, frac = m.groups()
         mult = 1.0 if letter in "Rr" else _PREFIX[letter]
-        return float(f"{whole}.{frac}") * mult
+        return _clean(float(f"{whole}.{frac}") * mult)
+
+    # RKM ohms with R at either end: 220R = 220 Ω, R47 = 0.47 Ω, 0R = 0 Ω (jumper)
+    m = re.fullmatch(r"(\d*\.?\d+)[Rr]", s) or re.fullmatch(r"[Rr](\d+)", s)
+    if m:
+        num = m.group(1)
+        return float(num) if s[-1] in "Rr" else float("0." + num)
 
     m = re.fullmatch(r"([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)([pnuµμmkKMG]?)", s)
     if not m:
         raise ValueError(f"can't parse value: {text!r}")
     number, prefix = m.groups()
-    return float(number) * _PREFIX[prefix]
+    return _clean(float(number) * _PREFIX[prefix])
+
+
+def _clean(x: float) -> float:
+    """Drop float noise from prefix scaling (10 * 1e-6 -> 1e-05, not 9.999999999999999e-06)."""
+    return float(f"{x:.12g}")
 
 
 def format_value(value: float, unit: str = "", digits: int = 3) -> str:

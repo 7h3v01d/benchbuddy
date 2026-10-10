@@ -208,3 +208,47 @@ def test_window_state_persists(app, tmp_path):
     assert w2.tabs.currentIndex() == 6
     assert w2.pinout_tab.board_combo.currentText() == "ESP32-C3 DevKit / Super Mini"
     w2.close()
+
+
+def test_report_export_html_and_pdf(win, tmp_path):
+    t = win.power_tab
+    html_path, pdf_path = tmp_path / "r.html", tmp_path / "r.pdf"
+    t.export_report(str(html_path))
+    t.export_report(str(pdf_path))
+    text = html_path.read_text(encoding="utf-8")
+    assert "POWER BUDGET REPORT" in text and "data:image/png;base64," in text
+    assert pdf_path.read_bytes()[:5] == b"%PDF-" and pdf_path.stat().st_size > 5000
+
+
+def test_header_mirrors_power_verdict(win):
+    t = win.power_tab
+    assert "check the warnings" in win.header.status.text()
+    t.on_new()
+    assert win.header.status.property("level") == "ok"
+    win.tabs.setCurrentIndex(3)
+    win.header.status.click()
+    assert win.tabs.currentWidget() is t
+
+
+def test_new_calculator_pages(win):
+    from benchbuddy.gui.calcs_tab import CalcsTab
+    c = [w for w in (win.tabs.widget(i) for i in range(win.tabs.count())) if isinstance(w, CalcsTab)][0]
+    c.t5_f.setText("38k")
+    c.t5_duty.setText("30")
+    assert "diode across R2" in c.t5_out.toPlainText()
+    c.t5_mode.setCurrentIndex(1)
+    assert "Hz" in c.t5_out.toPlainText() and "duty" in c.t5_out.toPlainText()
+    c.t5_mode.setCurrentIndex(2)
+    assert "Pulse" in c.t5_out.toPlainText()
+    c.oa_gain.setText("11")
+    assert "G = 11" in c.oa_out.toPlainText()
+    c.oa_vin.setText("1")                               # 11 V out of a 5 V rail: clips
+    assert "clip" in c.oa_out.toPlainText()
+    c.oa_inv.setCurrentIndex(1)
+    assert "Rin" in c.oa_out.toPlainText()
+    c.led_n.setValue(300)
+    text = c.led_out.toPlainText()
+    assert "setMaxPowerInVoltsAndMilliamps" in text and "both ends" in text
+    for i in range(c.sub_tabs.count()):
+        c.sub_tabs.setCurrentIndex(i)
+        c.sub_tabs.currentWidget().grab()
