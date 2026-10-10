@@ -331,3 +331,31 @@ def test_measure_apply_to_load_and_csv(win, app, tmp_path, monkeypatch):
     monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
     m.load_csv(str(bad))
     assert len(m.cap) == rate
+
+
+def test_boost_disconnect_checkbox(win):
+    from PyQt6.QtCore import Qt
+    from benchbuddy.core import power
+    t = win.power_tab
+    t.project = power.Project([power.Rail("S", 1.5, "supply", max_ma=1000),
+                               power.Rail("5V", 5.0, "boost", parent="S", max_ma=500, min_vin=1.8)],
+                              [power.Load("x", "5V", 1, 50, 50)])
+    t.refresh_all()
+    col = 12
+    assert t.rail_table.horizontalHeaderItem(col).text() == "Disconnect"
+    supply_cell, boost_cell = t.rail_table.item(0, col), t.rail_table.item(1, col)
+    assert not (supply_cell.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+    assert boost_cell.checkState() == Qt.CheckState.Unchecked
+    assert "diode" in t.details.toPlainText()
+    boost_cell.setCheckState(Qt.CheckState.Checked)
+    assert t.project.rails[1].output_disconnect is True
+    assert "disconnected" in t.details.toPlainText()
+
+
+def test_self_test_passes(app, tmp_path):
+    from benchbuddy import selftest
+    report = tmp_path / "selftest.txt"
+    assert selftest.run(str(report)) == 0
+    text = report.read_text(encoding="utf-8")
+    assert "ALL PASSED" in text and "FAIL" not in text
+    assert text.count("PASS ") == 8

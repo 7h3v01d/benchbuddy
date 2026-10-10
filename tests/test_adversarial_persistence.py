@@ -10,7 +10,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from benchbuddy.core import images, partsdb  # noqa: E402
+from benchbuddy.core import images  # noqa: E402
 from benchbuddy.core.partsdb import PartsDB, csv_safe, csv_unsafe, safe_url  # noqa: E402
 
 HOSTILE = "<b>bold</b><a href='file:///C:/Windows/System32/calc.exe'>click</a><img src=x>"

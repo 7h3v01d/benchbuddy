@@ -23,13 +23,16 @@ from .tree_view import PowerTreeView, image_png_bytes, render_tree_image
 from .widgets import STATUS_COLORS, STATUS_ICONS, ResultView, group, status_html
 
 RAIL_COLS = ["Name", "Type", "Parent", "Vout (V)", "Max (mA)", "Vmin (V)", "R int (Ω)",
-             "Capacity (mAh)", "Dropout / Min Vin (V)", "Eff (%)", "Iq (mA)", "θJA (°C/W)"]
+             "Capacity (mAh)", "Dropout / Min Vin (V)", "Eff (%)", "Iq (mA)", "θJA (°C/W)", "Disconnect"]
 RAIL_TIPS = {
     "Vmin (V)": "Lowest voltage the supply reaches in use (e.g. battery cut-off, USB minimum).",
     "R int (Ω)": "Source + cable resistance. Causes the voltage to sag when current peaks.",
     "Max (mA)": "Output rating of the supply or regulator.",
     "Dropout / Min Vin (V)": "LDO/buck: Vin must be ≥ Vout + this. Boost: minimum input voltage.",
     "θJA (°C/W)": "Thermal resistance used to estimate LDO temperature rise.",
+    "Disconnect": "Boost only. Ticked: the output is switched off when the boost stops (synchronous parts with "
+                  "true output disconnect). Unticked: like most boosts (MT3608...), its diode still passes about "
+                  "Vin − 0.4 V through when it stops.",
 }
 LOAD_COLS = ["Name", "Rail", "Qty", "Active (mA)", "Peak (mA)", "Sleep (mA)", "Duty (%)"]
 LOAD_TIPS = {
@@ -43,7 +46,7 @@ ENABLED = {
     "supply": {"Vout (V)", "Max (mA)", "Vmin (V)", "R int (Ω)", "Capacity (mAh)"},
     "ldo": {"Vout (V)", "Max (mA)", "Dropout / Min Vin (V)", "Iq (mA)", "θJA (°C/W)"},
     "buck": {"Vout (V)", "Max (mA)", "Dropout / Min Vin (V)", "Eff (%)", "Iq (mA)"},
-    "boost": {"Vout (V)", "Max (mA)", "Dropout / Min Vin (V)", "Eff (%)", "Iq (mA)"},
+    "boost": {"Vout (V)", "Max (mA)", "Dropout / Min Vin (V)", "Eff (%)", "Iq (mA)", "Disconnect"},
 }
 
 
@@ -267,14 +270,17 @@ class PowerTab(QWidget):
                 "Vmin (V)": self._fmt(r.v_min), "R int (Ω)": self._fmt(r.r_internal_ohm),
                 "Capacity (mAh)": self._fmt(r.capacity_mah), "Dropout / Min Vin (V)": self._fmt(third),
                 "Eff (%)": self._fmt(r.efficiency * 100), "Iq (mA)": self._fmt(r.iq_ma),
-                "θJA (°C/W)": self._fmt(r.theta_ja),
+                "θJA (°C/W)": self._fmt(r.theta_ja), "Disconnect": "",
             }
             for col, name in enumerate(RAIL_COLS):
                 if name in ("Type", "Parent"):
                     continue
                 item = QTableWidgetItem(values[name])
-                if name != "Name" and name not in enabled:
-                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+                if name == "Disconnect" and r.kind == "boost":
+                    item.setFlags((item.flags() | Qt.ItemFlag.ItemIsUserCheckable) & ~Qt.ItemFlag.ItemIsEditable)
+                    item.setCheckState(Qt.CheckState.Checked if r.output_disconnect else Qt.CheckState.Unchecked)
+                elif name != "Name" and name not in enabled:
+                    item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable & ~Qt.ItemFlag.ItemIsUserCheckable)
                     item.setBackground(QBrush(QColor(theme.PANEL)))
                     item.setText("")
                 t.setItem(row, col, item)
@@ -356,6 +362,11 @@ class PowerTab(QWidget):
         rail = self.project.rails[item.row()]
         col = RAIL_COLS[item.column()]
         text = item.text()
+        if col == "Disconnect":
+            if rail.kind == "boost":
+                rail.output_disconnect = item.checkState() == Qt.CheckState.Checked
+                self.recalc()
+            return
         try:
             if col == "Name":
                 new = text.strip()

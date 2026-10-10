@@ -18,7 +18,6 @@ from .power_tab import PowerTab
 from .resistor_tab import ResistorTab
 from .sim_tab import SimTab
 from . import theme
-from .theme import apply_theme  # noqa: F401  (re-exported for __main__)
 from .tools_tab import BatteryTab, ToolsTab
 
 

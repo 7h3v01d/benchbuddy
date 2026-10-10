@@ -9,7 +9,7 @@ import math
 from dataclasses import replace
 
 import pytest
-from hypothesis import HealthCheck, assume, given, settings
+from hypothesis import assume, given, settings
 from hypothesis import strategies as st
 
 from benchbuddy.core import power as P
@@ -43,7 +43,8 @@ def projects(draw):
         rails.append(P.Rail(f"R{k}", draw(st.floats(0.8, 24.0)), kind, parent=parent,
                             max_ma=draw(st.floats(10, 5000)), dropout_v=draw(st.floats(0, 2)),
                             min_vin=draw(st.floats(0.5, 5)), efficiency=draw(st.floats(0.5, 1.0)),
-                            iq_ma=draw(st.floats(0, 10)), theta_ja=draw(st.floats(0, 250))))
+                            iq_ma=draw(st.floats(0, 10)), theta_ja=draw(st.floats(0, 250)),
+                            output_disconnect=draw(st.booleans())))
     loads = []
     for k in range(draw(st.integers(0, 6))):
         loads.append(P.Load(f"L{k}", draw(st.sampled_from(rails)).name, draw(st.integers(1, 20)),
@@ -244,17 +245,20 @@ def test_boost_that_cannot_be_powered_hiccups(vs, r, vo, i_out, eff):
 
 
 # -------------------------------------------------------- H5: failure propagates
-def test_upstream_dropout_propagates_down_the_tree():
+@pytest.mark.parametrize("disconnect,c_out", [(True, 0.0), (False, 1.6 - P.BOOST_DIODE_V)])
+def test_upstream_dropout_propagates_down_the_tree(disconnect, c_out):
     p = P.Project([P.Rail("S", 3.0, "supply", max_ma=2000),
                    P.Rail("A", 3.3, "ldo", parent="S", max_ma=800, dropout_v=1.1),
                    P.Rail("B", 1.8, "ldo", parent="A", max_ma=500, dropout_v=0.3),
-                   P.Rail("C", 5.0, "boost", parent="B", max_ma=500, min_vin=1.8)],
+                   P.Rail("C", 5.0, "boost", parent="B", max_ma=500, min_vin=1.8, output_disconnect=disconnect)],
                   [P.Load("mcu", "C", 1, 50, 50)])
     rep = P.analyse(p)
     a, b, c = rep.by_name("A"), rep.by_name("B"), rep.by_name("C")
     assert not a.regulating and a.v_peak_v == pytest.approx(1.9)
     assert not b.regulating and b.v_peak_v == pytest.approx(1.6)
-    assert not c.regulating and c.v_peak_v == 0                         # boost below its UVLO
+    # boost below its minimum input: dead if it disconnects, else its diode passes Vin − Vf
+    assert not c.regulating and c.v_peak_v == pytest.approx(c_out)
+    assert any(("disconnected" if disconnect else "diode") in m for _, m in c.messages)
     assert all(r.status == "error" for r in (a, b, c))
     assert rep.status == "error"
 
@@ -279,3 +283,28 @@ def test_regulator_output_never_exceeds_what_physics_allows(proj):
             assert rr.v_peak_v <= max(rr.v_in_peak_v - r.dropout_v, 0) + 1e-9
         if r.kind == "supply":
             assert rr.v_peak_v <= (r.v_min or r.v_out) + 1e-9
+
+
+@FAST
+@given(projects())
+def test_stopped_boost_obeys_its_bypass_path(proj):
+    rep = P.analyse(proj)
+    for rr in rep.rails:
+        r = rr.rail
+        if r.kind != "boost" or rr.regulating:
+            continue
+        if r.output_disconnect:
+            assert rr.v_peak_v == 0                                    # nothing gets through
+        else:
+            assert rr.v_peak_v == pytest.approx(max(rr.v_in_peak_v - P.BOOST_DIODE_V, 0.0), abs=1e-9)
+            if rr.v_peak_v > 0:                                        # load current flows through the diode
+                assert rr.in_peak_ma >= rr.peak_ma - 1e-9
+
+
+def test_saved_projects_without_the_new_flag_still_load():
+    old = {"rails": [{"name": "S", "v_out": 3.7, "kind": "supply"},
+                     {"name": "B", "v_out": 5.0, "kind": "boost", "parent": "S"}], "loads": []}
+    proj = P.Project.from_dict(old)
+    assert proj.rails[1].output_disconnect is False
+    with pytest.raises(P.ProjectError):
+        P.Project.from_dict({"rails": [{"name": "S", "v_out": 3.7, "output_disconnect": "yes"}], "loads": []})

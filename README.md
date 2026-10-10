@@ -47,6 +47,23 @@ the icon (`tools/make_icon.py`) and runs PyInstaller with `benchbuddy.spec`. The
 photo-OCR Python side bundled. Photo OCR still needs the free Tesseract program installed (the
 UB-Mannheim installer's default folder is found automatically, or set `BENCHBUDDY_TESSERACT`).
 
+The build only counts if **the built exe passes its own self-test**: `build.bat` runs
+`BenchBuddy.exe --self-test dist\selftest-report.txt`, which checks what tends to break in a frozen
+build but not from source (bundled font, SVG icon plugin, both engines, meter protocol, serial port
+listing, the OCR Python side, every tab opening, HTML + PDF export) using a throwaway parts database
+and settings, then stops the build on any FAIL. You can run the same command on any PC you install it on.
+
+It then writes, next to the app folder in `dist\`:
+
+| File | What it is |
+|---|---|
+| `BenchBuddy-<ver>-win64.zip` | the app folder, ready to hand out |
+| `BenchBuddy-<ver>-SHA256SUMS.txt` | SHA-256 of every file in the app plus the zip |
+| `BenchBuddy-<ver>-RELEASE.txt` | version, build time, Python, exe hash, pins hash and the self-test report |
+
+Check a copy later with `python tools\release_manifest.py --verify dist\BenchBuddy-<ver>-SHA256SUMS.txt`
+(or `sha256sum -c` on Linux/macOS). The exe also carries its version in Windows' *Properties → Details*.
+
 ## What's inside
 
 | Tab | What it does |
@@ -91,9 +108,11 @@ or ESR, and rail voltages never go below 0 V. Expect ~0.5 % discretisation error
   - **LDO**: output `min(Vset, Vin − dropout)`; passes its output current plus Iq.
   - **Buck**: same voltage rule; draws `Vset·Iout / (η·Vin)` while regulating, rising to `Iout`
     (pass-through at 100 % duty) as it falls into dropout.
-  - **Boost**: draws `Vout·Iout / (η·Vin)` above its minimum input and nothing below it. If switching on
-    pulls its own input under that minimum, there is no steady state and it's reported as
-    **hiccuping**, with the source's maximum deliverable power (`V²/4R`) for comparison.
+  - **Boost**: draws `Vout·Iout / (η·Vin)` above its minimum input. Below it the boost stops: most boosts
+    (non-synchronous, MT3608-style) still pass `Vin − 0.4 V` through their diode and carry the load current;
+    tick **Disconnect** for synchronous parts with true output disconnect, which go to 0 V. If switching
+    on pulls its own input under the minimum, there is no steady state and it's reported as **hiccuping**,
+    with the source's maximum deliverable power (`V²/4R`) for comparison.
 - Every rail is judged on the voltage it *actually* receives, so a regulator in dropout drags
   everything downstream with it and each affected rail reports its own error.
 - Warnings use thresholds: 80 % of rating, 5 % / 10 % sag, 50 / 90 °C LDO rise.
@@ -132,7 +151,7 @@ is under the SIL Open Font License (`benchbuddy/gui/fonts/OFL.txt`).
 benchbuddy/core/   validation, units, resistors, capacitors, power, brownout, calcs, presets, examples, pinout, report, meter, images, partsdb, seed_parts, seed_extra, identify, ocr
 benchbuddy/gui/    one module per tab + main_window, theme (+ fonts/, icons/)
 tests/             core maths, headless GUI smoke tests, adversarial / property suites (test_adversarial_*)
-tools/            make_icon.py (SVG → .ico for the Windows build)
+tools/            make_icon.py (SVG → .ico), release_manifest.py (zip, SHA-256 sums, release notes, --verify)
 firmware/         ESP32 meter sketch + wiring guide; host_test/ runs the sketch on a PC for tests
 ```
 

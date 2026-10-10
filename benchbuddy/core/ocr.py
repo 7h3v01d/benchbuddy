@@ -66,7 +66,8 @@ _ALLOWED = re.compile(r"[^A-Z0-9\-+./]")
 def ocr_available() -> tuple[bool, str]:
     """(ok, reason). reason explains what is missing when ok is False."""
     try:
-        import PIL  # noqa: F401
+        import importlib
+        importlib.import_module("PIL")
     except ImportError:
         return False, "The 'pillow' package is not installed."
     try:

@@ -2,10 +2,16 @@ import sys
 
 from PyQt6.QtWidgets import QApplication
 
-from benchbuddy.gui.main_window import MainWindow, apply_theme  # absolute: also runs frozen (PyInstaller)
+from benchbuddy.gui.theme import apply_theme
+from benchbuddy.gui.main_window import MainWindow  # absolute: also runs frozen (PyInstaller)
 
 
 def main() -> int:
+    if "--self-test" in sys.argv:
+        from benchbuddy.selftest import run
+        k = sys.argv.index("--self-test")
+        report = sys.argv[k + 1] if k + 1 < len(sys.argv) and not sys.argv[k + 1].startswith("-") else None
+        return run(report)
     if sys.platform == "win32":
         # own taskbar group + icon instead of python.exe's
         try:

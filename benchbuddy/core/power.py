@@ -73,6 +73,8 @@ class Rail:
     iq_ma: float = 0.0               # regulator quiescent current
     theta_ja: float = 60.0           # degC/W, for LDO temperature estimate
     note: str = ""
+    output_disconnect: bool = False  # boost: True = output switched off when it stops (synchronous parts
+                                     # with true disconnect); False = diode path, Vin − 0.4 V flows through
 
 
 @dataclass
@@ -239,6 +241,8 @@ def check_types(project: Project) -> None:
             raise E(f"rail '{r.name}': parent must be a rail name")
         if not isinstance(r.note, str):
             raise E(f"rail '{r.name}': note must be text")
+        if not isinstance(r.output_disconnect, bool):
+            raise E(f"rail '{r.name}': output_disconnect must be true or false")
         for f in _RAIL_NUMS:
             number(f"rail '{r.name}': {f}", getattr(r, f), error=E)
         for f in _RAIL_OPT:
@@ -304,10 +308,12 @@ class _Op:
     v_out: float = 0.0          # V actually delivered
     regulating: bool = True
     reason: str = ""            # "dropout" | "uvlo" | "hiccup" when not regulating
+    on: bool = True             # boost: switching (False = stopped; a diode-path boost still passes Vin − Vf)
 
 
 _VIN_FLOOR = 0.1               # a boost needs at least 10 % of its root source's voltage to run
 _GRID = 512                    # coarse scan for the supply's operating point, then bisection
+BOOST_DIODE_V = 0.4            # Schottky drop of a non-synchronous boost's rectifier (the bypass path)
 
 
 def _nominal(r: Rail, peak: bool) -> float:
@@ -337,10 +343,10 @@ def _evaluate(sub: list[Rail], rails: dict[str, Rail], children: dict[str, list[
         op.v_in = vin
         if r.kind in ("ldo", "buck"):
             op.v_out = max(min(r.v_out, vin - r.dropout_v), 0.0)
-        elif r.name not in forced_off and vin >= _boost_threshold(r, rails, peak):
-            op.v_out = max(r.v_out, vin)
         else:
-            op.v_out = 0.0
+            through = 0.0 if r.output_disconnect else max(vin - BOOST_DIODE_V, 0.0)   # bypass path
+            op.on = r.name not in forced_off and vin >= _boost_threshold(r, rails, peak)
+            op.v_out = max(r.v_out, through) if op.on else through
     for r in reversed(sub):                                     # currents, bottom-up
         op = ops[r.name]
         own = sum(l.peak_ma if peak else l.avg_ma for l in loads_on[r.name])
@@ -351,9 +357,11 @@ def _evaluate(sub: list[Rail], rails: dict[str, Rail], children: dict[str, list[
             op.i_in = op.i_out + r.iq_ma
         elif r.kind == "buck":
             op.i_in = _buck_ratio(r, op.v_in) * op.i_out + r.iq_ma
-        elif op.v_out > 0:                                      # boost, running
+        elif op.on:                                             # boost, switching
             op.i_in = op.v_out * op.i_out / (r.efficiency * op.v_in) + r.iq_ma
-        else:                                                   # boost, off
+        elif op.v_out > 0:                                      # stopped, load fed through the diode
+            op.i_in = op.i_out + r.iq_ma
+        else:                                                   # stopped with output disconnected
             op.i_in = r.iq_ma
     return ops[root.name].i_out
 
@@ -407,7 +415,7 @@ def _solve(order: list[Rail], rails: dict[str, Rail], children: dict[str, list[R
                         # Only a boost switching on/off makes g jump; the one(s) sitting on
                         # their threshold at the jump are the ones that can't stay on.
                         running = [r for r in sub if r.kind == "boost" and r.name not in hiccup
-                                   and ops[r.name].v_out > 0]
+                                   and ops[r.name].on]
                         band = 1e-6 + 10 * (hi - lo)
                         culprits = {r.name for r in running
                                     if ops[r.name].v_in - _boost_threshold(r, rails, peak) <= band}
@@ -430,11 +438,18 @@ def _solve(order: list[Rail], rails: dict[str, Rail], children: dict[str, list[R
             op.regulating, op.reason = ok, "" if ok else "dropout"
         elif r.name in hiccup:
             op.regulating, op.reason = False, "hiccup"
-        elif op.v_out <= 0:
+        elif not op.on:
             op.regulating, op.reason = False, "uvlo"
         else:
             op.regulating, op.reason = True, ""
     return ops, True
+
+
+def _stopped_output(rail: Rail, op: _Op) -> str:
+    if rail.output_disconnect:
+        return " Its output is disconnected, so this rail is dead."
+    return (f" Its diode still passes ≈ {op.v_out:.2f} V straight through (set point {rail.v_out:g} V), "
+            f"so everything on this rail runs under-voltage.")
 
 
 def _source_of(r: Rail, rails: dict[str, Rail]) -> Rail:
@@ -510,11 +525,12 @@ def analyse(project: Project, usable_capacity: float = 0.8,
                          f"{src.r_internal_ohm:g} Ω source resistance, and this boost needs ≈ {p_need:.2f} W."
                          if src.r_internal_ohm > 0 else "")
                 rep.add(ERROR, f"No stable operating point {when}: switching on pulls its own input below "
-                               f"{_boost_threshold(rail, rails, True):.2f} V, so it shuts down and restarts (hiccups).{limit}")
+                               f"{_boost_threshold(rail, rails, True):.2f} V, so it shuts down and restarts (hiccups)."
+                               f"{limit}{_stopped_output(rail, pk)}")
             elif pk.reason == "uvlo":
                 rep.add(ERROR, f"Its input falls to {pk.v_in:.2f} V {when}, below the "
-                               f"{_boost_threshold(rail, rails, True):.2f} V it needs to run: the boost is off and this "
-                               f"rail is dead.")
+                               f"{_boost_threshold(rail, rails, True):.2f} V it needs to run: the boost is off."
+                               f"{_stopped_output(rail, pk)}")
             else:
                 rep.add(ERROR, f"Can't hold {rail.v_out:g} V {when}: its input only reaches {pk.v_in:.2f} V "
                                f"(needs {rail.v_out + rail.dropout_v:.2f} V), so the output sags to ≈ "

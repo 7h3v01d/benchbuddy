@@ -22,8 +22,9 @@ SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
 def main() -> int:
-    app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841 - QIcon needs an app
+    app = QApplication.instance() or QApplication(sys.argv)  # QIcon needs an app alive
     icon = QIcon(str(ICONS / "app.svg"))
+    assert app is not None
     big = icon.pixmap(256, 256).toImage()
     buf = QBuffer()
     buf.open(QIODevice.OpenModeFlag.WriteOnly)

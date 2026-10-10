@@ -445,7 +445,6 @@ def test_sim_lag_mode_stable_with_high_source_resistance():
 
 
 # ------------------------------------------------------------ parts library v2
-import csv as _csv  # noqa: E402
 import sqlite3 as _sqlite3  # noqa: E402
 
 from benchbuddy.core import partsdb as _pdb  # noqa: E402
