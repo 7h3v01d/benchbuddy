@@ -629,3 +629,59 @@ def test_ocr_reads_clean_synthetic_markings(tmp_path):
 def test_ocr_error_paths(tmp_path):
     with pytest.raises((ValueError, RuntimeError)):
         _ocr.read_markings(tmp_path / "nothing.png")
+
+
+# ------------------------------------------------------------------ pinout
+from benchbuddy.core import pinout  # noqa: E402
+
+
+def test_pinout_boards_load_and_flags_known():
+    assert len(pinout.BOARDS) == 5
+    for b in pinout.BOARDS.values():
+        assert b.pins, b.name
+        for p in b.pins:
+            assert p.flags <= set(pinout.FLAGS), (b.name, p.label)
+            assert p.severity in pinout.SEVERITY_ORDER
+
+
+def test_esp32_classic_gotchas():
+    b = pinout.esp32_devkit()
+    assert b.find("12").severity == "caution" and "strap" in b.find("12").flags
+    for g in (6, 7, 8, 9, 10, 11):
+        assert b.find(str(g)).severity == "avoid"
+    for g in (34, 35, 36, 39):
+        p = b.find(str(g))
+        assert "input_only" in p.flags and pinout.OUT not in p.caps
+    # only ADC1 pins survive "analog + Wi-Fi"
+    wifi_adc = {p.gpio for p in b.pins if p.matches(["adc_wifi"])}
+    assert wifi_adc == {32, 33, 34, 35, 36, 39}
+    assert {p.gpio for p in b.pins if p.matches(["dac"])} == {25, 26}
+
+
+def test_d1_r32_header_matches_arduino_variant():
+    b = pinout.wemos_d1_r32()
+    expect = {"D0": 3, "D1": 1, "D2": 26, "D3": 25, "D4": 17, "D5": 16, "D6": 27, "D7": 14, "D8": 12,
+              "D9": 13, "D10": 5, "D11": 23, "D12": 19, "D13": 18,
+              "A0": 2, "A1": 4, "A2": 35, "A3": 34, "A4": 36, "A5": 39, "SDA": 21, "SCL": 22}
+    got = {p.label.split(" · ")[0]: p.gpio for p in b.pins}
+    assert got == expect
+
+
+def test_s3_c3_and_avr_details():
+    s3 = pinout.esp32_s3()
+    assert {p.gpio for p in s3.pins if "strap" in p.flags} == {0, 3, 45, 46}
+    assert {p.gpio for p in s3.pins if p.matches(["adc_wifi"])} == set(range(1, 11))
+    c3 = pinout.esp32_c3()
+    assert {p.gpio for p in c3.pins if "strap" in p.flags} == {2, 8, 9}
+    assert {p.gpio for p in c3.pins if "flash" in p.flags} == set(range(12, 18))
+    uno = pinout.arduino_uno_nano()
+    assert {p.label for p in uno.pins if p.matches(["pwm"])} == {"D3", "D5", "D6", "D9", "D10", "D11"}
+    assert not any(p.matches(["adc_wifi"]) for p in uno.pins)
+
+
+def test_pin_suggest_orders_clean_pins_first():
+    b = pinout.esp32_devkit()
+    best = pinout.suggest(b, ["out", "boot_safe"])
+    assert best and best[0].severity == "ok"
+    assert all(p.severity != "avoid" for p in best)
+    assert all(p.severity == "ok" for p in pinout.suggest(b, ["out"], include_caution=False))

@@ -4,15 +4,16 @@ from __future__ import annotations
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QBrush, QColor
-from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog, QHBoxLayout, QHeaderView,
+from PyQt6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView,
                              QLabel, QMessageBox, QPushButton, QSpinBox, QSplitter, QTableWidget,
-                             QTableWidgetItem, QVBoxLayout, QWidget)
+                             QTableWidgetItem, QScrollArea, QTabWidget, QVBoxLayout, QWidget)
 
 from ..core import power
 from ..core.presets import (LOAD_PRESETS, REGULATOR_PRESETS, SOURCE_PRESETS, make_load,
                             make_rail)
 from ..core.units import parse_value
 from . import theme
+from .tree_view import PowerTreeView
 from .widgets import STATUS_COLORS, STATUS_ICONS, ResultView, group, status_html
 
 RAIL_COLS = ["Name", "Type", "Parent", "Vout (V)", "Max (mA)", "Vmin (V)", "R int (Ω)",
@@ -81,16 +82,17 @@ class PowerTab(QWidget):
         add_src.clicked.connect(self.add_supply)
         self.reg_combo = QComboBox()
         self.reg_combo.addItems(REGULATOR_PRESETS)
-        add_reg = QPushButton("Add regulator (fed from selected rail)")
+        add_reg = QPushButton("Add regulator")
+        add_reg.setToolTip("Adds the regulator fed from the rail selected in the table above.")
         add_reg.clicked.connect(self.add_regulator)
         del_rail = QPushButton("Remove rail")
         del_rail.clicked.connect(self.remove_rail)
         r1, r2 = QHBoxLayout(), QHBoxLayout()
         r1.addWidget(self.source_combo, 1)
         r1.addWidget(add_src)
+        r1.addWidget(del_rail)
         r2.addWidget(self.reg_combo, 1)
         r2.addWidget(add_reg)
-        r2.addWidget(del_rail)
         rails_lay = QVBoxLayout()
         rails_lay.addWidget(self.rail_table)
         rails_lay.addLayout(r1)
@@ -125,12 +127,19 @@ class PowerTab(QWidget):
         l1.addWidget(self.load_rail_combo, 1)
         l1.addWidget(QLabel("×"))
         l1.addWidget(self.qty_spin)
-        l1.addWidget(add_load)
-        l1.addWidget(add_custom)
-        l1.addWidget(del_load)
+        l2 = QHBoxLayout()
+        l2.addStretch(1)
+        l2.addWidget(add_load)
+        l2.addWidget(add_custom)
+        l2.addWidget(del_load)
+        for combo in (self.source_combo, self.reg_combo, self.load_combo):
+            # long preset names shouldn't dictate the panel's minimum width
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(14)
         loads_lay = QVBoxLayout()
         loads_lay.addWidget(self.load_table)
         loads_lay.addLayout(l1)
+        loads_lay.addLayout(l2)
         loads_lay.addWidget(self.preset_note)
 
         left = QWidget()
@@ -152,7 +161,21 @@ class PowerTab(QWidget):
         right = QWidget()
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.addWidget(group("Results", self._wrap(self.result_table)), 1)
+        self.tree_view = PowerTreeView()
+        self.tree_view.railClicked.connect(self.select_rail)
+        self.result_tabs = QTabWidget()
+        self.result_tabs.setDocumentMode(True)
+        tree_scroll = QScrollArea()
+        tree_scroll.setWidgetResizable(True)
+        tree_scroll.setWidget(self.tree_view)
+        self.result_tabs.addTab(tree_scroll, "DIAGRAM")
+        self.result_tabs.addTab(self.result_table, "TABLE")
+        expand = QPushButton("⤢ Expand")
+        expand.setToolTip("Open the power tree in its own resizable window")
+        expand.clicked.connect(self.open_tree_window)
+        self.result_tabs.setCornerWidget(expand, Qt.Corner.TopRightCorner)
+        self._tree_window: QDialog | None = None
+        right_lay.addWidget(group("Results", self._wrap(self.result_tabs)), 3)
         right_lay.addWidget(group("What this means", self._wrap(self.details)), 2)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -160,7 +183,7 @@ class PowerTab(QWidget):
         split.addWidget(right)
         split.setStretchFactor(0, 5)
         split.setStretchFactor(1, 4)
-        split.setSizes([700, 580])
+        split.setSizes([660, 620])
 
         lay = QVBoxLayout(self)
         lay.addLayout(bar)
@@ -497,6 +520,8 @@ class PowerTab(QWidget):
             report = power.analyse(self.project)
         except power.ProjectError as exc:
             self.result_table.setRowCount(0)
+            for view in self._tree_views():
+                view.show_message(f"✖ {exc}")
             self.details.show_error(str(exc))
             self._set_banner("error", "Fix the power tree")
             return
@@ -507,7 +532,43 @@ class PowerTab(QWidget):
         self.banner.setProperty("level", level)
         theme.repolish(self.banner)
 
+    def _tree_views(self) -> list[PowerTreeView]:
+        views = [self.tree_view]
+        if self._tree_window is not None:
+            views.append(self._tree_window.findChild(PowerTreeView))
+        return views
+
+    def open_tree_window(self) -> None:
+        """Pop the diagram out into a big window that stays in sync with the tables."""
+        if self._tree_window is None:
+            dlg = QDialog(self)
+            dlg.setWindowTitle("Power tree")
+            dlg.resize(1000, 640)
+            view = PowerTreeView()
+            view.railClicked.connect(self.select_rail)
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(view)
+            QVBoxLayout(dlg).addWidget(scroll)
+            self._tree_window = dlg
+            self.recalc()
+        self._tree_window.show()
+        self._tree_window.raise_()
+
+    def select_rail(self, name: str) -> None:
+        """Highlight a rail (clicked in the diagram) in the rail and result tables."""
+        for t in (self.rail_table, self.result_table):
+            for row in range(t.rowCount()):
+                item = t.item(row, 0)
+                if item and item.text().strip() == name:
+                    t.selectRow(row)
+                    t.scrollToItem(item)
+                    break
+
     def _show_report(self, report: power.PowerReport) -> None:
+        self._last_report = report
+        for view in self._tree_views():
+            view.set_data(self.project, report)
         if not report.rails:
             self.result_table.setRowCount(0)
             self.details.show_html("Add a supply to begin: pick one from the list and press <b>Add supply</b>.")

@@ -6,6 +6,7 @@ import pytest
 
 pytest.importorskip("PyQt6")
 
+from PyQt6.QtCore import QSettings  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from benchbuddy.core.partsdb import PartsDB  # noqa: E402
@@ -18,15 +19,16 @@ def app():
 
 
 @pytest.fixture()
-def win(app):
-    w = MainWindow(PartsDB(":memory:"))
+def win(app, tmp_path):
+    settings = QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)
+    w = MainWindow(PartsDB(":memory:"), settings)
     w.show()
     yield w
     w.close()
 
 
 def test_all_tabs_build(win):
-    assert win.tabs.count() == 8
+    assert win.tabs.count() == 9
     for i in range(win.tabs.count()):
         win.tabs.setCurrentIndex(i)
         win.tabs.currentWidget().grab()
@@ -160,3 +162,49 @@ def test_photo_dialog_without_ocr_shows_hint(win, tmp_path, monkeypatch):
     assert dlg.worker is None
     assert "tesseract" in dlg.status.text().lower() and "install" in dlg.status.text().lower()
     dlg.close()
+
+
+def test_power_tree_diagram_tracks_project(win):
+    t = win.power_tab
+    keys = t.tree_view.node_keys()
+    assert "rail:USB 5V" in keys and "rail:3V3" in keys
+    assert sum(k.startswith("load:") for k in keys) == len(t.project.loads)
+    t.tree_view.grab()
+    # clicking a rail selects it in the rail table
+    t.tree_view.railClicked.emit("3V3")
+    assert t.rail_table.item(t.rail_table.currentRow(), 0).text() == "3V3"
+    # pop-out window stays in sync
+    t.open_tree_window()
+    pop = t._tree_views()[1]
+    assert pop.node_keys() == keys
+    t.on_new()
+    assert pop.node_keys() == [] and t.tree_view.node_keys() == []
+
+
+def test_pinout_tab_filters_and_details(win):
+    p = win.pinout_tab
+    p.board_combo.setCurrentText("ESP32 DevKit (WROOM-32)")
+    p.req_boxes["adc_wifi"].setChecked(True)
+    lit = {p.board.pins[i].gpio for i in p.grid.lit}
+    assert lit == {32, 33, 34, 35, 36, 39}
+    p.req_boxes["out"].setChecked(True)
+    assert {p.board.pins[i].gpio for i in p.grid.lit} == {32, 33}
+    p.select_label("GPIO12")
+    html = p.detail.toPlainText()
+    assert "Strapping" in html and "1.8 V" in html
+    # boards without the capability hide that checkbox
+    p.board_combo.setCurrentText("Arduino Uno / Nano (ATmega328P)")
+    assert p.req_boxes["adc_wifi"].isHidden() and not p.req_boxes["adc_wifi"].isChecked()
+    p.grab()
+
+
+def test_window_state_persists(app, tmp_path):
+    ini = str(tmp_path / "s.ini")
+    w = MainWindow(PartsDB(":memory:"), QSettings(ini, QSettings.Format.IniFormat))
+    w.tabs.setCurrentIndex(6)
+    w.pinout_tab.board_combo.setCurrentText("ESP32-C3 DevKit / Super Mini")
+    w.close()
+    w2 = MainWindow(PartsDB(":memory:"), QSettings(ini, QSettings.Format.IniFormat))
+    assert w2.tabs.currentIndex() == 6
+    assert w2.pinout_tab.board_combo.currentText() == "ESP32-C3 DevKit / Super Mini"
+    w2.close()
