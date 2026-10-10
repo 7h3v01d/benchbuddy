@@ -381,5 +381,10 @@ def from_power_rail(project, rail_name: str) -> SimParams:
                        iq_a=rail.iq_ma / 1000, v_threshold=max(rail.v_out * 0.9, 0.5))
     if rail.kind == "ldo":
         return replace(base_p, reg_kind="ldo", dropout_v=rail.dropout_v)
+    if rail.kind == "boost" and src >= rail.v_out:
+        # the simulator's switcher steps down as happily as up; a boost can't, so don't pretend
+        raise SimulationError(f"'{rail.name}' is a boost fed {src:g} V for a {rail.v_out:g} V output: it can't "
+                              f"step down, so it doesn't regulate and there's nothing to simulate. See the "
+                              f"Power budget for what it does instead.")
     return replace(base_p, reg_kind="switcher", efficiency=rail.efficiency,
                    vin_min=rail.min_vin if rail.kind == "boost" else rail.v_out + rail.dropout_v)

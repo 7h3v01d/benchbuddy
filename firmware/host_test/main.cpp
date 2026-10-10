@@ -2,6 +2,10 @@
 #include "Arduino.h"
 #include "Wire.h"
 #include <cstdlib>
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 uint64_t g_now_us = 0;
 int g_chip = 226;
@@ -17,6 +21,11 @@ static void run_for(double seconds) {
 }
 
 int main(int argc, char **argv) {
+#ifdef _WIN32
+  // The frames are binary. Windows C runtimes open stdout in text mode and turn every 0x0A byte
+  // into 0x0D 0x0A, which corrupts them; the real board's UART has no such layer.
+  _setmode(_fileno(stdout), _O_BINARY);
+#endif
   g_chip = argc > 1 ? atoi(argv[1]) : 226;
   setup();
   if (g_chip == 2191) { Serial.rx += "FORCE INA219\n"; run_for(0.01); }

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .validation import DomainError, non_negative, number, positive
+from .validation import DomainError, non_negative, number, positive, reciprocal
 
 import math
 from dataclasses import dataclass
@@ -203,7 +203,7 @@ def parallel_resistance(values: list[float]) -> float:
     [positive('R', v) for v in values]
     if any(v <= 0 for v in values):
         raise ValueError("resistances must be positive")
-    return 1.0 / sum(1.0 / v for v in values)
+    return reciprocal("parallel resistance", sum(reciprocal("parallel resistance", v) for v in values))
 
 
 # ----------------------------------------------------------------- resistor use
@@ -305,3 +305,8 @@ def _nonempty(values) -> None:
 def _series(name) -> None:
     if name not in SERIES:
         raise DomainError(f"unknown E-series {name!r}")
+
+
+from .validation import guard_arithmetic as _guard_arithmetic  # noqa: E402
+
+_guard_arithmetic(globals(), __name__)

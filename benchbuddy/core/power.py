@@ -141,6 +141,7 @@ class RailReport:
     v_peak_v: float | None = None    # voltage this rail actually delivers at peak load
     v_in_peak_v: float | None = None # regulators: voltage at their input at peak load
     regulating: bool = True          # regulators: holds its set voltage at peak load
+    reason: str = ""                 # why not, at peak load: dropout | uvlo | hiccup | overinput
     dissipation_avg_w: float = 0.0
     dissipation_peak_w: float = 0.0
     temp_rise_avg_c: float | None = None
@@ -307,8 +308,9 @@ class _Op:
     v_in: float | None = None   # V at the regulator's input (None for a supply)
     v_out: float = 0.0          # V actually delivered
     regulating: bool = True
-    reason: str = ""            # "dropout" | "uvlo" | "hiccup" when not regulating
+    reason: str = ""            # "dropout" | "uvlo" | "hiccup" | "overinput" when not regulating
     on: bool = True             # boost: switching (False = stopped; a diode-path boost still passes Vin − Vf)
+    over: bool = False          # boost: input too high to step up from, so it isn't switching
 
 
 _VIN_FLOOR = 0.1               # a boost needs at least 10 % of its root source's voltage to run
@@ -330,6 +332,13 @@ def _buck_ratio(r: Rail, vin: float) -> float:
     return min(1.0, r.v_out / (r.efficiency * vin)) if vin > 0 else 1.0
 
 
+def _boost_ratio(r: Rail, vin: float) -> float:
+    """Iin/Iout of a switching boost: Vset/(η·Vin), never below 1. A boost's input current is its
+    inductor current and only part of that reaches the output, so it can never draw less than it
+    delivers - the floor stops a boost near Vin ≈ Vout from looking like a buck."""
+    return max(1.0, r.v_out / (r.efficiency * vin)) if vin > 0 else 1.0
+
+
 def _evaluate(sub: list[Rail], rails: dict[str, Rail], children: dict[str, list[Rail]],
               loads_on: dict[str, list[Load]], ops: dict[str, _Op], v_term: float, peak: bool,
               forced_off: set[str]) -> float:
@@ -344,9 +353,14 @@ def _evaluate(sub: list[Rail], rails: dict[str, Rail], children: dict[str, list[
         if r.kind in ("ldo", "buck"):
             op.v_out = max(min(r.v_out, vin - r.dropout_v), 0.0)
         else:
-            through = 0.0 if r.output_disconnect else max(vin - BOOST_DIODE_V, 0.0)   # bypass path
-            op.on = r.name not in forced_off and vin >= _boost_threshold(r, rails, peak)
-            op.v_out = max(r.v_out, through) if op.on else through
+            # A boost only steps up. Stopped (input under its minimum, hiccuping, or input already at or
+            # above the set point) a diode-path boost passes Vin − Vf through its rectifier and a
+            # true-disconnect boost delivers nothing; it never regulates down to Vset.
+            through = 0.0 if r.output_disconnect else max(vin - BOOST_DIODE_V, 0.0)
+            can_run = r.name not in forced_off and vin >= _boost_threshold(r, rails, peak)
+            op.over = can_run and (vin >= r.v_out if r.output_disconnect else through > r.v_out)
+            op.on = can_run and not op.over
+            op.v_out = r.v_out if op.on else through
     for r in reversed(sub):                                     # currents, bottom-up
         op = ops[r.name]
         own = sum(l.peak_ma if peak else l.avg_ma for l in loads_on[r.name])
@@ -358,8 +372,10 @@ def _evaluate(sub: list[Rail], rails: dict[str, Rail], children: dict[str, list[
         elif r.kind == "buck":
             op.i_in = _buck_ratio(r, op.v_in) * op.i_out + r.iq_ma
         elif op.on:                                             # boost, switching
-            op.i_in = op.v_out * op.i_out / (r.efficiency * op.v_in) + r.iq_ma
-        elif op.v_out > 0:                                      # stopped, load fed through the diode
+            op.i_in = _boost_ratio(r, op.v_in) * op.i_out + r.iq_ma
+        elif not r.output_disconnect:                           # stopped, load fed through the diode
+            # (constant-current loads keep drawing even if the rail has collapsed to 0 V, exactly as
+            # through an LDO or a buck at 100 % duty; cutting the current at Vin = Vf would be a jump)
             op.i_in = op.i_out + r.iq_ma
         else:                                                   # stopped with output disconnected
             op.i_in = r.iq_ma
@@ -373,7 +389,8 @@ def _solve(order: list[Rail], rails: dict[str, Rail], children: dict[str, list[R
     I(V) is the exact draw of the whole subtree when the supply sits at V (constant-current
     loads; LDOs pass current; bucks draw Vset·Iout/(η·Vin), capped at Iout once they hit
     100 % duty, with Vout = Vin − dropout below regulation;
-    boosts draw Vout·Iout/(η·Vin) above their minimum input and nothing below it). The
+    boosts draw max(1, Vset/(η·Vin))·Iout while stepping up, Iout through the diode when stopped,
+    and only Iq with the output disconnected). The
     highest root is the operating point a powered-up circuit settles into. It is bracketed on
     a grid and bisected, so it always converges. If the only sign change is a jump where a
     boost switches on - on, it drags V below its own threshold; off, V recovers - there is no
@@ -438,6 +455,8 @@ def _solve(order: list[Rail], rails: dict[str, Rail], children: dict[str, list[R
             op.regulating, op.reason = ok, "" if ok else "dropout"
         elif r.name in hiccup:
             op.regulating, op.reason = False, "hiccup"
+        elif op.over:
+            op.regulating, op.reason = False, "overinput"
         elif not op.on:
             op.regulating, op.reason = False, "uvlo"
         else:
@@ -501,7 +520,7 @@ def analyse(project: Project, usable_capacity: float = 0.8,
         rep.util_peak_pct = peak / rail.max_ma * 100
         rep.v_peak_v = pk.v_out
         rep.v_in_peak_v = pk.v_in
-        rep.regulating = pk.regulating
+        rep.regulating, rep.reason = pk.regulating, pk.reason
 
         if rail.kind == "ldo":
             vin_a, vin_p = a.v_in or 0.0, pk.v_in or 0.0
@@ -511,13 +530,32 @@ def analyse(project: Project, usable_capacity: float = 0.8,
                 rep.temp_rise_avg_c = rep.dissipation_avg_w * rail.theta_ja
                 rep.temp_rise_peak_c = rep.dissipation_peak_w * rail.theta_ja
         elif rail.kind in ("buck", "boost"):
-            rep.dissipation_avg_w = rail.v_out * avg / 1000 * (1 / rail.efficiency - 1)
-            rep.dissipation_peak_w = rail.v_out * peak / 1000 * (1 / rail.efficiency - 1)
+            # power in − power out at the solved operating point: switching loss while regulating,
+            # the diode drop in pass-through, ~nothing when off
+            rep.dissipation_avg_w = max((a.v_in or 0.0) * a.i_in - a.v_out * a.i_out, 0.0) / 1000
+            rep.dissipation_peak_w = max((pk.v_in or 0.0) * pk.i_in - pk.v_out * pk.i_out, 0.0) / 1000
 
         # ---- can this regulator actually hold its output?
-        if rail.kind != "supply" and not pk.regulating:
-            when = "even at average load" if not a.regulating else "at peak load"
-            if pk.reason == "hiccup":
+        bad = pk if not pk.regulating else a           # over-input is worst at light load
+        if rail.kind != "supply" and not bad.regulating:
+            if bad is a:
+                when = "at average load" if bad.reason == "overinput" else "even at average load"
+            else:
+                when = "even at average load" if not a.regulating else "at peak load"
+            if bad.reason == "overinput":
+                v_in = bad.v_in or 0.0
+                if rail.output_disconnect:
+                    rep.add(ERROR, f"Its input is {v_in:.2f} V {when}, not below the {rail.v_out:g} V it's set to, "
+                                   f"and a boost can only step up. With output disconnect, BenchBuddy treats it as "
+                                   f"off: 0 V on this rail. (Some synchronous parts pass the input through or switch "
+                                   f"to a down-mode instead; check the datasheet, and untick Disconnect for a part "
+                                   f"that passes Vin through.)")
+                else:
+                    sev = ERROR if bad.v_out > rail.v_out * 1.05 else WARN
+                    rep.add(sev, f"Its input is {v_in:.2f} V {when}, above the {rail.v_out:g} V it's set to: a "
+                                 f"boost can only step up, so it stops switching and its diode passes ≈ "
+                                 f"{bad.v_out:.2f} V straight through. Everything on this rail sees that voltage.")
+            elif bad.reason == "hiccup":
                 src = _source_of(rail, rails)
                 p_need = rail.v_out * peak / 1000 / rail.efficiency
                 v0 = _nominal(src, True)
@@ -526,15 +564,15 @@ def analyse(project: Project, usable_capacity: float = 0.8,
                          if src.r_internal_ohm > 0 else "")
                 rep.add(ERROR, f"No stable operating point {when}: switching on pulls its own input below "
                                f"{_boost_threshold(rail, rails, True):.2f} V, so it shuts down and restarts (hiccups)."
-                               f"{limit}{_stopped_output(rail, pk)}")
-            elif pk.reason == "uvlo":
-                rep.add(ERROR, f"Its input falls to {pk.v_in:.2f} V {when}, below the "
+                               f"{limit}{_stopped_output(rail, bad)}")
+            elif bad.reason == "uvlo":
+                rep.add(ERROR, f"Its input falls to {bad.v_in:.2f} V {when}, below the "
                                f"{_boost_threshold(rail, rails, True):.2f} V it needs to run: the boost is off."
-                               f"{_stopped_output(rail, pk)}")
+                               f"{_stopped_output(rail, bad)}")
             else:
-                rep.add(ERROR, f"Can't hold {rail.v_out:g} V {when}: its input only reaches {pk.v_in:.2f} V "
+                rep.add(ERROR, f"Can't hold {rail.v_out:g} V {when}: its input only reaches {bad.v_in:.2f} V "
                                f"(needs {rail.v_out + rail.dropout_v:.2f} V), so the output sags to ≈ "
-                               f"{pk.v_out:.2f} V. Everything on this rail will brown out.")
+                               f"{bad.v_out:.2f} V. Everything on this rail will brown out.")
 
         # ---- rating checks
         if avg > rail.max_ma:
@@ -747,3 +785,9 @@ def ohms_law(v: float | None = None, i: float | None = None, r: float | None = N
         r, p = known["r"], known["p"]
         v, i = math.sqrt(p * r), math.sqrt(p / r)
     return {"v": v, "i": i, "r": r, "p": p}
+
+
+from .validation import guard_arithmetic as _guard_arithmetic  # noqa: E402
+
+# only the stand-alone calculators; analyse() has its own validation and reporting
+_guard_arithmetic(globals(), __name__, only=("wire_drop", "duty_cycle_average", "ohms_law", "smallest_awg_for_drop"))

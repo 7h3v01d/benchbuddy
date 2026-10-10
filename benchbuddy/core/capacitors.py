@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from .validation import DomainError, non_negative, number, positive
+from .validation import DomainError, non_negative, number, positive, reciprocal
 
 import math
 from dataclasses import dataclass
+
 
 # ------------------------------------------------------------------ markings
 
@@ -90,7 +91,7 @@ def rc_time_constant(r_ohms: float, c_farads: float) -> float:
 def rc_cutoff_hz(r_ohms: float, c_farads: float) -> float:
     positive('R', r_ohms)
     positive('C', c_farads)
-    return 1.0 / (2 * math.pi * r_ohms * c_farads)
+    return reciprocal("cutoff frequency", 2 * math.pi * r_ohms * c_farads)
 
 
 def rc_charge_time(r_ohms: float, c_farads: float, vstart_frac: float = 0.0,
@@ -109,7 +110,7 @@ def rc_charge_time(r_ohms: float, c_farads: float, vstart_frac: float = 0.0,
 def capacitor_reactance(c_farads: float, freq_hz: float) -> float:
     positive('C', c_farads)
     positive('frequency', freq_hz)
-    return 1.0 / (2 * math.pi * freq_hz * c_farads)
+    return reciprocal("reactance", 2 * math.pi * freq_hz * c_farads)
 
 
 def capacitor_energy(c_farads: float, volts: float) -> float:
@@ -121,7 +122,7 @@ def capacitor_energy(c_farads: float, volts: float) -> float:
 def series_capacitance(values: list[float]) -> float:
     _nonempty(values)
     [positive('C', v) for v in values]
-    return 1.0 / sum(1.0 / v for v in values)
+    return reciprocal("series capacitance", sum(reciprocal("series capacitance", v) for v in values))
 
 
 def parallel_capacitance(values: list[float]) -> float:
@@ -133,7 +134,7 @@ def parallel_capacitance(values: list[float]) -> float:
 def self_resonant_hz(c_farads: float, esl_henries: float) -> float:
     positive('C', c_farads)
     positive('ESL', esl_henries)
-    return 1.0 / (2 * math.pi * math.sqrt(c_farads * esl_henries))
+    return reciprocal("self-resonant frequency", 2 * math.pi * math.sqrt(c_farads * esl_henries))
 
 
 # ----------------------------------------------------------------- bulk / holdup
@@ -189,3 +190,8 @@ def esp32_decoupling_advice() -> list[str]:
 def _nonempty(values) -> None:
     if not values:
         raise DomainError("enter at least one value")
+
+
+from .validation import guard_arithmetic as _guard_arithmetic  # noqa: E402
+
+_guard_arithmetic(globals(), __name__)

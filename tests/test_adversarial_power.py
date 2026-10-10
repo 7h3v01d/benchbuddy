@@ -174,11 +174,17 @@ def test_more_source_resistance_never_raises_the_rail(proj, extra_r):
         if r.kind == "supply":
             r.r_internal_ohm += extra_r
     after = P.analyse(proj)
-    if _states(before) == _states(after):
-        for a, b in zip(before.rails, after.rails):
-            assert b.v_peak_v <= a.v_peak_v + 1e-6, a.rail.name
+    changed = [(a, b) for a, b in zip(before.rails, after.rails) if a.regulating != b.regulating]
+    # a boost whose input sags out of over-input pass-through back into regulation is the one change
+    # that makes things *better*; it still only lowers voltages (Vset < Vin − Vf, and it draws more)
+    if all(a.reason == "overinput" and b.regulating for a, b in changed):
+        # ...except a true-disconnect boost: declared off (0 V) while it can't step up, so coming back
+        # on raises its rail and everything below it (see test_disconnect_boost_boundary_is_declared)
+        if not any(a.rail.output_disconnect for a, _ in changed):
+            for a, b in zip(before.rails, after.rails):
+                assert b.v_peak_v <= a.v_peak_v + 1e-6, a.rail.name
     else:                                  # something gave up: it must be a regulator that got worse
-        assert any(a.regulating and not b.regulating for a, b in zip(before.rails, after.rails))
+        assert any(a.regulating and not b.regulating for a, b in changed)
 
 
 @FAST
@@ -269,7 +275,9 @@ def test_no_rail_reports_ok_when_its_input_cant_support_it(proj):
     rep = P.analyse(proj)
     for rr in rep.rails:
         if rr.rail.kind != "supply" and not rr.regulating:
-            assert rr.status == "error", rr.rail.name
+            # the one exception: a diode-path boost a hair above its set point (Vin − Vf within 5 %)
+            mild = rr.reason == "overinput" and rr.v_peak_v <= rr.rail.v_out * 1.05
+            assert rr.status in (("warn", "error") if mild else ("error",)), rr.rail.name
 
 
 @FAST
@@ -308,3 +316,92 @@ def test_saved_projects_without_the_new_flag_still_load():
     assert proj.rails[1].output_disconnect is False
     with pytest.raises(P.ProjectError):
         P.Project.from_dict({"rails": [{"name": "S", "v_out": 3.7, "output_disconnect": "yes"}], "loads": []})
+
+
+# ------------------------------------------------- boosts only step up (review 3, finding 2)
+def _boost_case(vin: float, disconnect: bool, load_ma: float = 100.0, eff: float = 0.9):
+    proj = P.Project([P.Rail("S", vin, "supply", max_ma=3000),
+                      P.Rail("B", 5.0, "boost", parent="S", max_ma=1000, min_vin=1.0, efficiency=eff,
+                             output_disconnect=disconnect)],
+                     [P.Load("L", "B", 1, load_ma, load_ma)])
+    return P.analyse(proj).by_name("B")
+
+
+@pytest.mark.parametrize("vin,disconnect,v_out,regulating,reason", [
+    (3.3, False, 5.0, True, ""),             # normal step-up
+    (4.9, False, 5.0, True, ""),             # near the boundary
+    (5.0, False, 5.0, True, ""),             # Vin = Vset: diode gives 4.6 V, still tops up to 5 V
+    (6.0, False, 5.6, False, "overinput"),   # diode path: Vin − 0.4 V straight through
+    (12.0, False, 11.6, False, "overinput"),
+    (3.3, True, 5.0, True, ""),
+    (4.9, True, 5.0, True, ""),
+    (5.0, True, 0.0, False, "overinput"),    # declared: a true-disconnect boost can't step down -> off
+    (6.0, True, 0.0, False, "overinput"),
+    (12.0, True, 0.0, False, "overinput"),
+])
+def test_boost_operating_regions(vin, disconnect, v_out, regulating, reason):
+    b = _boost_case(vin, disconnect)
+    assert b.v_peak_v == pytest.approx(v_out)
+    assert (b.regulating, b.reason) == (regulating, reason)
+    if not regulating:
+        assert b.status == "error"                     # the boost's OWN rail is flagged, not just its parent
+        assert not any("Healthy" in m for s, m in b.messages if s != "ok")
+    if v_out == 0:
+        assert b.in_peak_ma == pytest.approx(0.0) and b.dissipation_peak_w == pytest.approx(0.0)
+    elif not regulating:                               # pass-through: load current, diode-drop loss only
+        assert b.in_peak_ma == pytest.approx(100.0)
+        assert b.dissipation_peak_w == pytest.approx(P.BOOST_DIODE_V * 0.1)
+
+
+def test_diode_boost_just_above_its_set_point_is_a_warning():
+    b = _boost_case(5.45, False)                       # 5.05 V out of a 5 V rail
+    assert not b.regulating and b.status == "warn" and b.v_peak_v == pytest.approx(5.05)
+
+
+@FAST
+@given(projects())
+def test_no_boost_ever_bucks(proj):
+    """A boost never outputs less than its input while drawing less than it delivers (that's a buck),
+    and never regulates to a set point below its input."""
+    rep = P.analyse(proj)
+    for rr in rep.rails:
+        r = rr.rail
+        if r.kind != "boost" or not rr.peak_ma:
+            continue
+        if rr.v_peak_v > 0:
+            assert rr.in_peak_ma >= rr.peak_ma - 1e-9, r.name
+        if rr.regulating:
+            assert rr.v_in_peak_v < r.v_out + P.BOOST_DIODE_V + 1e-9, r.name
+            if r.output_disconnect:
+                assert rr.v_in_peak_v < r.v_out, r.name
+
+
+@FAST
+@given(st.floats(0.5, 30), st.floats(1.0, 24), st.booleans(), st.floats(0.5, 0.99), st.floats(0, 2000))
+def test_boost_input_power_covers_output_power(vin, vset, disconnect, eff, load):
+    proj = P.Project([P.Rail("S", vin, "supply", max_ma=5000),
+                      P.Rail("B", vset, "boost", parent="S", max_ma=5000, min_vin=0.5, efficiency=eff,
+                             output_disconnect=disconnect)],
+                     [P.Load("L", "B", 1, load, load)])
+    b = P.analyse(proj).by_name("B")
+    p_in, p_out = b.v_in_peak_v * b.in_peak_ma, b.v_peak_v * b.peak_ma
+    assert p_in >= p_out - 1e-6                         # no free energy
+    assert b.dissipation_peak_w >= 0
+
+
+def test_sim_refuses_a_boost_that_would_have_to_step_down():
+    from benchbuddy.core import brownout as bo
+    proj = P.Project([P.Rail("S", 12.0, "supply", max_ma=3000),
+                      P.Rail("B", 5.0, "boost", parent="S", max_ma=1000)],
+                     [P.Load("L", "B", 1, 100, 100)])
+    with pytest.raises(bo.SimulationError, match="can't step down"):
+        bo.from_power_rail(proj, "B")
+
+
+def test_disconnect_boost_boundary_is_declared():
+    """The declared simplification, pinned: a true-disconnect boost is off from Vin = Vset up and
+    regulates just below it. A diode-path boost has no such cliff (it tops up until Vin − Vf > Vset)."""
+    assert _boost_case(5.0, True).v_peak_v == 0.0
+    assert _boost_case(4.999, True).v_peak_v == pytest.approx(5.0)
+    assert _boost_case(5.0, False).v_peak_v == pytest.approx(5.0)
+    assert _boost_case(5.4, False).v_peak_v == pytest.approx(5.0)

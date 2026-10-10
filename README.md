@@ -62,7 +62,8 @@ It then writes, next to the app folder in `dist\`:
 | `BenchBuddy-<ver>-RELEASE.txt` | version, build time, Python, exe hash, pins hash and the self-test report |
 
 Check a copy later with `python tools\release_manifest.py --verify dist\BenchBuddy-<ver>-SHA256SUMS.txt`
-(or `sha256sum -c` on Linux/macOS). The exe also carries its version in Windows' *Properties → Details*.
+(or `sha256sum -c` on Linux/macOS). Every listed file must be present and unchanged: a missing DLL fails
+it just like a changed one. To check only part of a release (the zip on its own, say), add `--allow-missing`. The exe also carries its version in Windows' *Properties → Details*.
 
 ## What's inside
 
@@ -108,11 +109,21 @@ or ESR, and rail voltages never go below 0 V. Expect ~0.5 % discretisation error
   - **LDO**: output `min(Vset, Vin − dropout)`; passes its output current plus Iq.
   - **Buck**: same voltage rule; draws `Vset·Iout / (η·Vin)` while regulating, rising to `Iout`
     (pass-through at 100 % duty) as it falls into dropout.
-  - **Boost**: draws `Vout·Iout / (η·Vin)` above its minimum input. Below it the boost stops: most boosts
-    (non-synchronous, MT3608-style) still pass `Vin − 0.4 V` through their diode and carry the load current;
-    tick **Disconnect** for synchronous parts with true output disconnect, which go to 0 V. If switching
-    on pulls its own input under the minimum, there is no steady state and it's reported as **hiccuping**,
-    with the source's maximum deliverable power (`V²/4R`) for comparison.
+  - **Boost**: only steps *up*. While switching it draws `max(1, Vout/(η·Vin))·Iout`: never less
+    than it delivers, so a boost near `Vin ≈ Vout` can't look like a buck. It stops switching in two cases,
+    and what reaches the rail then depends on the part:
+    - **input under its minimum**: the boost is off (UVLO).
+    - **input too high to step up from**: a boost can't regulate down, so it is reported as not
+      regulating on its *own* rail. That happens once `Vin − 0.4 V` passes the set point, or with Disconnect
+      ticked once `Vin ≥ Vset`.
+
+    Most boosts (non-synchronous, MT3608-style) then pass `Vin − 0.4 V` through their diode and carry the
+    load current, losing only the diode drop. Tick **Disconnect** for synchronous parts with true output
+    disconnect; BenchBuddy then treats the output as 0 V. That is a declared simplification: some synchronous
+    parts pass the input through or switch to a down-mode instead, so check the datasheet. If switching on
+    pulls its own input under the minimum, there is no steady state and it's reported as **hiccuping**, with
+    the source's maximum deliverable power (`V²/4R`) for comparison. Converter loss is `Pin − Pout` at the
+    solved operating point.
 - Every rail is judged on the voltage it *actually* receives, so a regulator in dropout drags
   everything downstream with it and each affected rail reports its own error.
 - Warnings use thresholds: 80 % of rating, 5 % / 10 % sag, 50 / 90 °C LDO rise.

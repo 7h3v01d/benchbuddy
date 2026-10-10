@@ -411,3 +411,8 @@ def _series(name) -> None:
 def _rails(v_neg, v_pos) -> None:
     if v_pos <= v_neg:
         raise DomainError("V+ must be above V−")
+
+
+from .validation import guard_arithmetic as _guard_arithmetic  # noqa: E402
+
+_guard_arithmetic(globals(), __name__)

@@ -30,7 +30,9 @@ def _run(exe, chip):
     res = subprocess.run([str(exe), str(chip)], check=True, capture_output=True)
     p = m.FrameParser()
     frames = p.feed(res.stdout)
-    assert p.bad_frames == 0 and p.skipped_bytes == 0
+    assert p.bad_frames == 0 and p.skipped_bytes == 0, (
+        f"{p.bad_frames} corrupt frames, {p.skipped_bytes} stray bytes"
+        + (" - the stream has CR LF pairs: is the harness's stdout in binary mode?" if b"\r\n" in res.stdout else ""))
     return frames, res.stderr.decode()
 
 

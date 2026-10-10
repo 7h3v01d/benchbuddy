@@ -8,7 +8,8 @@ Writes next to the folder:
   BenchBuddy-<version>-RELEASE.txt        what was built, with what, and the self-test result
 Verify a download or an installed copy later (any OS, no sha256sum needed):
     python tools/release_manifest.py --verify dist/BenchBuddy-<version>-SHA256SUMS.txt
-or on Linux/macOS:  sha256sum -c BenchBuddy-<version>-SHA256SUMS.txt   (run in that folder)
+Every listed file must be present and match. To check only what you have (just the zip, say), add
+--allow-missing. On Linux/macOS: sha256sum -c [--ignore-missing] BenchBuddy-<version>-SHA256SUMS.txt
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import datetime as dt
 import hashlib
 import platform
 import re
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -33,23 +35,41 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def verify(sums_file: Path) -> int:
-    """Check every line of a SHA256SUMS file. Missing entries are skipped (e.g. the zip, once unpacked)."""
-    base, bad, ok, missing = sums_file.parent, 0, 0, 0
-    for line in sums_file.read_text(encoding="utf-8").splitlines():
+def _freeze() -> str:
+    try:
+        out = subprocess.run([sys.executable, "-m", "pip", "freeze", "--all"], capture_output=True,
+                             text=True, timeout=120, check=True).stdout
+        return out.strip() or "(empty)"
+    except (OSError, subprocess.SubprocessError) as exc:
+        return f"(pip freeze unavailable: {exc})"
+
+
+def verify(sums_file: Path, allow_missing: bool = False) -> int:
+    """Check every line of a SHA256SUMS file. Any changed, missing or malformed entry fails, because an
+    incomplete copy isn't a valid copy. allow_missing=True skips absent files (e.g. checking just the
+    zip you downloaded), but at least one file must still match."""
+    base, bad, ok, missing = sums_file.parent.resolve(), 0, 0, 0
+    for n, line in enumerate(sums_file.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
-        digest, name = line.split("  ", 1)
-        path = base / name
-        if not path.is_file():
+        digest, sep, name = line.partition("  ")
+        path = (base / name).resolve()
+        if not sep or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest) \
+                or not name or base not in path.parents:
+            bad += 1
+            print(f"MALFORMED line {n}: {line[:80]!r}")
+        elif not path.is_file():
             missing += 1
+            if not allow_missing:
+                print(f"MISSING  {name}")
         elif sha256(path) == digest:
             ok += 1
         else:
             bad += 1
             print(f"CHANGED  {name}")
-    print(f"{ok} OK, {bad} changed, {missing} not present")
-    return 1 if bad or not ok else 0
+    print(f"{ok} OK, {bad} changed or malformed, {missing} missing"
+          + (" (allowed)" if allow_missing and missing else ""))
+    return 1 if bad or not ok or (missing and not allow_missing) else 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -57,9 +77,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("app_dir", type=Path, nargs="?")
     ap.add_argument("--self-test-report", type=Path)
     ap.add_argument("--verify", type=Path, metavar="SHA256SUMS", help="check files against a sums file")
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="with --verify: skip files that aren't there (e.g. only the zip was downloaded)")
     a = ap.parse_args(argv)
     if a.verify:
-        return verify(a.verify)
+        return verify(a.verify, a.allow_missing)
     if a.app_dir is None:
         ap.error("give the built app folder, or --verify SUMS")
     app_dir: Path = a.app_dir.resolve()
@@ -97,6 +119,8 @@ def main(argv: list[str] | None = None) -> int:
     if constraints.is_file():
         info.append(f"Pins       constraints-release.txt  sha256 {sha256(constraints)}")
     info += ["", "Self-test", "---------", st.rstrip()]
+    info += ["", "Build environment (pip freeze --all: every package, transitive ones included)",
+             "-----------------------------------------------------------------------------", _freeze()]
     (out / f"{stem}-RELEASE.txt").write_text("\n".join(info) + "\n", encoding="utf-8")
     print(f"wrote {zpath.name}, {stem}-SHA256SUMS.txt, {stem}-RELEASE.txt")
     return 0

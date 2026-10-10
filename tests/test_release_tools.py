@@ -6,6 +6,8 @@ import re
 import zipfile
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("release_manifest", ROOT / "tools" / "release_manifest.py")
 rm = importlib.util.module_from_spec(_spec)
@@ -45,6 +47,43 @@ def test_manifest_round_trip_and_tamper_detection(tmp_path, capsys):
     (app / "_internal" / "sub" / "data.bin").write_bytes(b"tampered")
     assert rm.main(["--verify", str(sums)]) == 1
     assert "CHANGED  BenchBuddy/_internal/sub/data.bin" in capsys.readouterr().out
+
+
+def _built(tmp_path):
+    from benchbuddy import __version__
+    app = _fake_app(tmp_path)
+    assert rm.main([str(app)]) == 0
+    return app, app.parent / f"BenchBuddy-{__version__}-SHA256SUMS.txt"
+
+
+def test_verify_fails_when_any_manifest_file_is_missing(tmp_path, capsys):
+    app, sums = _built(tmp_path)
+    (app / "_internal" / "sub" / "data.bin").unlink()              # exe still present and correct
+    capsys.readouterr()
+    assert rm.verify(sums) == 1
+    assert rm.main(["--verify", str(sums)]) == 1
+    assert "MISSING  BenchBuddy/_internal/sub/data.bin" in capsys.readouterr().out
+
+
+def test_allow_missing_is_explicit_and_still_catches_changes(tmp_path):
+    app, sums = _built(tmp_path)
+    for f in app.rglob("*"):                                         # only the zip is left
+        if f.is_file():
+            f.unlink()
+    assert rm.verify(sums) == 1
+    assert rm.main(["--verify", str(sums), "--allow-missing"]) == 0
+    zipf = next(sums.parent.glob("*.zip"))
+    zipf.write_bytes(zipf.read_bytes() + b"x")
+    assert rm.main(["--verify", str(sums), "--allow-missing"]) == 1
+
+
+@pytest.mark.parametrize("line", ["not a sums line", "abc  BenchBuddy/BenchBuddy.exe",
+                                  "0" * 64 + "  ../../outside.txt", "0" * 64 + "  "])
+def test_malformed_or_escaping_lines_fail(tmp_path, line):
+    app, sums = _built(tmp_path)
+    sums.write_text(sums.read_text() + line + "\n")
+    assert rm.verify(sums) == 1
+    assert rm.verify(sums, allow_missing=True) == 1
 
 
 def test_verify_refuses_an_empty_match(tmp_path):

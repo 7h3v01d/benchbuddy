@@ -2,6 +2,7 @@
 ValueError (reviewer properties 13 and 14), and never raises a raw arithmetic error."""
 
 import inspect
+import itertools
 import math
 
 import pytest
@@ -9,6 +10,7 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from benchbuddy.core import calcs, capacitors, power, resistors
+from benchbuddy.core.validation import _all_finite
 
 # (function, valid kwargs) - the valid call proves the harness; each numeric arg is then poisoned
 CASES = [
@@ -87,24 +89,54 @@ def test_non_finite_inputs_are_rejected(fn, kwargs, arg, bad):
     lambda: calcs.opamp_check(2, 2, 0.5, 5, -5),                  # rails swapped
     lambda: calcs.led_budget(0, 20),
     lambda: calcs.led_budget(60, 20, psu_margin=0.5),
+    # valid-but-extreme inputs whose product underflows to 0 (found by the fuzzer in 0.5.2)
+    lambda: capacitors.self_resonant_hz(5.9e-170, 5.9e-170),
+    lambda: capacitors.rc_cutoff_hz(5.9e-170, 5.9e-170),
+    lambda: capacitors.capacitor_reactance(5.9e-170, 5.9e-170),
+    lambda: capacitors.series_capacitance([5e-324]),
+    lambda: resistors.parallel_resistance([5e-324, 1.0]),
 ])
 def test_out_of_domain_inputs_are_rejected(call):
     with pytest.raises(ValueError):
         call()
 
 
-finite = st.floats(min_value=-1e6, max_value=1e6, allow_nan=False, allow_infinity=False)
+finite = st.floats(allow_nan=False, allow_infinity=False)            # the whole range a user can type
 
 
 @given(st.data())
 def test_random_inputs_never_escape_as_arithmetic_errors(data):
-    """Any finite garbage either computes or raises ValueError - never ZeroDivision/Overflow."""
+    """Any finite garbage either computes a finite answer or raises ValueError - never
+    ZeroDivision/Overflow, and never inf/NaN handed back as if it were a result."""
     fn, kwargs = data.draw(st.sampled_from(CASES))
     args = {k: (data.draw(finite) if isinstance(v, float) else v) for k, v in kwargs.items()}
     try:
-        fn(**args)
+        result = fn(**args)
     except ValueError:
-        pass
+        return
+    assert _all_finite(result), (fn.__name__, args, result)
+
+
+# every magnitude class floats have: subnormal, smallest normal, tiny, ordinary, huge, max, zero, negatives
+EXTREMES = (5e-324, 2.2250738585072014e-308, 1e-200, 1e-12, 1.0, 3.0, 1e12, 1e200, 1.7e308,
+            0.0, -1e-300, -1.0, -1e300)
+
+
+@pytest.mark.parametrize("fn,kwargs", CASES, ids=[fn.__name__ for fn, _ in CASES])
+def test_extreme_magnitudes_are_computed_or_refused(fn, kwargs):
+    """Deterministic version of the fuzz above: every pair of extreme magnitudes across the float
+    arguments (the rest at their defaults). Underflow to a zero divisor was found this way in 0.5.2."""
+    floats = [k for k, v in kwargs.items() if isinstance(v, float)]
+    pairs = itertools.combinations(floats, 2) if len(floats) > 1 else [(f,) for f in floats]
+    for names in pairs:
+        for combo in itertools.product(EXTREMES, repeat=len(names)):
+            args = dict(kwargs)
+            args.update(zip(names, combo))
+            try:
+                result = fn(**args)
+            except ValueError:
+                continue
+            assert _all_finite(result), (fn.__name__, args, result)
 
 
 def test_every_public_calculator_is_covered():
